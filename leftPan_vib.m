@@ -12,15 +12,16 @@
 // 2. Intent Thresholds (How fast/horizontal the finger must move to begin)
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Success Thresholds (How far/fast to swipe to actually trigger the 'Back' action)
+// 3. Success Thresholds (Perfectly matched with iOS native transition physics)
 // Portrait
-#define kLPVPortraitSuccessTranslationRatio (1.0 / 3.0)
-#define kLPVPortraitSuccessVelocity 500.0  // Increased to match iOS native flick velocity
-#define kLPVPortraitMinFlickTranslation 35.0 // Conservative Fix: Must swipe at least 35pt even if very fast
+#define kLPVPortraitSuccessTranslationRatio 0.35 // 35% of screen width for slow drags
+#define kLPVPortraitSuccessVelocity 200.0        // Native-like flick velocity
+#define kLPVPortraitMinFlickTranslation 15.0     // Minimal distance needed if flicking fast
 
 // Landscape
 #define kLPVLandscapeSuccessTranslation 80.0
-#define kLPVLandscapeSuccessVelocity 300.0
+#define kLPVLandscapeSuccessVelocity 200.0
+#define kLPVLandscapeMinFlickTranslation 15.0
 
 
 static char kWindowHelperKey;
@@ -128,11 +129,11 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - Device Orientation Control (V10 Stable Method)
+#pragma mark - Device Orientation Control (Stable Mode)
 
 - (void)forcePortraitOrientation {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // 1. Force UIDevice value via KVC (Stable hack for Bilibili)
+        // 1. Force UIDevice value via KVC
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
         
@@ -202,14 +203,20 @@ static char kWindowHelperKey;
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
         
-        // Portrait Predictive Haptic (Conservative Fix applied here)
+        // Portrait Predictive Haptic: Using iOS Native 3-Tier Algorithm
         if (pan.state == UIGestureRecognizerStateEnded) {
             CGPoint trans = [pan translationInView:pan.view];
             CGPoint vel = [pan velocityInView:pan.view];
             CGFloat screenWidth = pan.view.bounds.size.width;
             
-            BOOL predictedToPop = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio)) || 
-                                  (vel.x > kLPVPortraitSuccessVelocity && trans.x > kLPVPortraitMinFlickTranslation);
+            BOOL predictedToPop = NO;
+            if (vel.x > kLPVPortraitSuccessVelocity) {
+                predictedToPop = (trans.x > kLPVPortraitMinFlickTranslation);
+            } else if (vel.x < -kLPVPortraitSuccessVelocity) {
+                predictedToPop = NO;
+            } else {
+                predictedToPop = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio));
+            }
             
             if (predictedToPop) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -233,11 +240,21 @@ static char kWindowHelperKey;
         
         BOOL success = NO;
         if (isLandscape) {
-            success = (trans.x > kLPVLandscapeSuccessTranslation || vel.x > kLPVLandscapeSuccessVelocity);
+            if (vel.x > kLPVLandscapeSuccessVelocity) {
+                success = (trans.x > kLPVLandscapeMinFlickTranslation);
+            } else if (vel.x < -kLPVLandscapeSuccessVelocity) {
+                success = NO;
+            } else {
+                success = (trans.x > kLPVLandscapeSuccessTranslation);
+            }
         } else {
-            // Apply same conservative prediction logic for portrait fallback
-            success = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio)) || 
-                      (vel.x > kLPVPortraitSuccessVelocity && trans.x > kLPVPortraitMinFlickTranslation);
+            if (vel.x > kLPVPortraitSuccessVelocity) {
+                success = (trans.x > kLPVPortraitMinFlickTranslation);
+            } else if (vel.x < -kLPVPortraitSuccessVelocity) {
+                success = NO;
+            } else {
+                success = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio));
+            }
         }
         
         if (success) {
