@@ -21,12 +21,10 @@ static char kWindowHelperKey;
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
-
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
-
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
@@ -108,7 +106,6 @@ static char kWindowHelperKey;
 + (BOOL)isGameViewController:(UIViewController *)vc {
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
-    // Common game engines: Unity, Unreal (Metal), Cocos (EAGL/Surface)
     if ([viewClassStr containsString:@"Unity"] || 
         [viewClassStr containsString:@"EAGL"] || 
         [viewClassStr containsString:@"MTKView"] ||
@@ -122,14 +119,25 @@ static char kWindowHelperKey;
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
+    
+    // Check orientation
+    UIWindow *window = pan.view.window ?: self.window;
+    BOOL isLandscape = NO;
+    if (@available(iOS 13.0, *)) {
+        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+    } else {
+        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+    }
     
     if (pan.state == UIGestureRecognizerStateBegan) {
-        UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        if (nav) {
+        // ONLY hijack native transition in Portrait mode.
+        // Hijacking in Landscape causes severe orientation glitching (flashing portrait).
+        if (nav && !isLandscape) {
             @try {
                 NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
                 if (targets && targets.count > 0) {
@@ -145,47 +153,55 @@ static char kWindowHelperKey;
         }
     }
 
-    // Forward the inverted pan gesture to the native iOS transition engine.
+    // Forward the gesture to native iOS transition engine (Portrait only)
     if (!self.useFallbackMode && self.systemTarget) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
-    } else {
-        [self handleFallbackPan:pan topVC:topVC];
-    }
-    
-    // Predictive Haptic Vibrate: Trigger exactly when the user lifts their finger 
-    // IF the gesture meets the iOS threshold for completing the pop animation.
-    if (pan.state == UIGestureRecognizerStateEnded) {
-        CGPoint trans = [pan translationInView:pan.view];
-        CGPoint vel = [pan velocityInView:pan.view];
-        CGFloat screenWidth = pan.view.bounds.size.width;
         
-        // Threshold: Swiped more than 1/3 of the screen OR swiped fast enough
-        if (trans.x > screenWidth / 3.0 || vel.x > 300.0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-                [feedback prepare];
-                [feedback impactOccurred];
-            });
+        // Portrait Predictive Haptic
+        if (pan.state == UIGestureRecognizerStateEnded) {
+            CGPoint trans = [pan translationInView:pan.view];
+            CGPoint vel = [pan velocityInView:pan.view];
+            CGFloat screenWidth = pan.view.bounds.size.width;
+            
+            // Portrait threshold: 1/3 of width or fast flick
+            if (trans.x > screenWidth / 3.0 || vel.x > 300.0) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                    [feedback prepare];
+                    [feedback impactOccurred];
+                });
+            }
         }
+    } else {
+        // Fallback execution for Landscape or Modal views
+        [self handleFallbackPan:pan topVC:topVC nav:nav];
     }
 }
 
-// Fallback logic for presented ViewControllers without a NavigationController
-- (void)handleFallbackPan:(LPVReversePanGesture *)pan topVC:(UIViewController *)topVC {
+// Fallback logic for Landscape mode & Presented ViewControllers
+- (void)handleFallbackPan:(LPVReversePanGesture *)pan topVC:(UIViewController *)topVC nav:(UINavigationController *)nav {
     if (pan.state == UIGestureRecognizerStateEnded) {
         CGPoint trans = [pan translationInView:pan.view];
         CGPoint vel = [pan velocityInView:pan.view];
-        CGFloat screenWidth = pan.view.bounds.size.width;
         
-        if (trans.x > screenWidth / 3.0 || vel.x > 300.0) {
-            if (topVC && topVC.presentingViewController) {
-                dispatch_async(dispatch_get_main_queue(), ^{
+        // Landscape threshold: Swiping more than 80 points is considered a success
+        if (trans.x > 80.0 || vel.x > 300.0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // 1. Haptic Feedback
+                UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                [feedback prepare];
+                [feedback impactOccurred];
+                
+                // 2. Perform Back/Dismiss
+                if (nav && nav.viewControllers.count > 1) {
+                    [nav popViewControllerAnimated:YES];
+                } else if (topVC && topVC.presentingViewController) {
                     [topVC dismissViewControllerAnimated:YES completion:nil];
-                });
-            }
+                }
+            });
         }
     }
 }
@@ -208,7 +224,7 @@ static char kWindowHelperKey;
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if (isLandscape) {
-        // Landscape Game Check: Block if it is a known game engine view
+        // Game Check: Block if it is a known game engine view
         if ([LeftPanWindowHelper isGameViewController:topVC]) {
             return NO;
         }
@@ -233,7 +249,7 @@ static char kWindowHelperKey;
         return NO;
     }
 
-    // Prevent triggering if the user is already on the root page (e.g. main gameplay screen)
+    // Prevent triggering if the user is already on the root page
     if (![LeftPanWindowHelper canGoBack:topVC]) {
         return NO;
     }
