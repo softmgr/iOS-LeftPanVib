@@ -7,16 +7,22 @@
 
 // 1. Trigger Zones
 #define kLPVPortraitZoneRatio (2.0 / 3.0)
-#define kLPVLandscapeZoneWidth 45.0
+// WIDENED: 60 points covers a full thumb width to easily catch edge swipes in landscape.
+#define kLPVLandscapeZoneWidth 60.0
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Fallback Success Thresholds (Used only in Landscape / Modal views)
-// Tuned exactly to Apple's internal physics standards for UIGestureRecognizer
-#define kLPVFallbackSuccessTranslation 100.0     // Translation distance required for slow drags
-#define kLPVFallbackSuccessVelocity 300.0        // Velocity required to be considered a 'flick'
-#define kLPVFallbackMinFlickTranslation 20.0     // Minimum distance required even if flicking extremely fast (Anti-jitter)
+// 3. Success Thresholds
+// Portrait (Untouched - Perfect State)
+#define kLPVPortraitSuccessTranslationRatio 0.35 
+#define kLPVPortraitSuccessVelocity 120.0        
+#define kLPVPortraitMinFlickTranslation 8.0      
+
+// Landscape
+#define kLPVLandscapeSuccessTranslation 80.0
+#define kLPVLandscapeSuccessVelocity 120.0
+#define kLPVLandscapeMinFlickTranslation 8.0
 
 
 static char kWindowHelperKey;
@@ -61,7 +67,8 @@ static char kWindowHelperKey;
         _pan = [[LPVReversePanGesture alloc] initWithTarget:self action:@selector(handlePan:)];
         _pan.delegate = self;
         _pan.cancelsTouchesInView = YES;
-        _pan.delaysTouchesBegan = NO;
+        // DELAY TOUCHES: Crucial for preventing Bilibili's progress bar from stealing the swipe.
+        _pan.delaysTouchesBegan = YES;
         [window addGestureRecognizer:_pan];
     }
     return self;
@@ -124,10 +131,12 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - Device Orientation Control
+#pragma mark - Device Orientation Control (Delayed Override)
 
 - (void)forcePortraitOrientation {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // 0.1s DELAY: Wait for Bilibili's internal state machine to finish updating its UI,
+    // THEN aggressively force the orientation to Portrait. This prevents state overwrites.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
         [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
@@ -193,14 +202,12 @@ static char kWindowHelperKey;
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
         
-        // 核心更新：使用底层 API 直接向 iOS 转场协调器订阅“判决结果”
         if (pan.state == UIGestureRecognizerStateBegan) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator ?: nav.transitionCoordinator;
                 if (coordinator && [coordinator initiallyInteractive]) {
                     if (@available(iOS 10.0, *)) {
                         [coordinator notifyWhenInteractionEndsUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
-                            // isCancelled == NO 说明系统允许了这次返回，此时触发震动分毫不差
                             if (![context isCancelled]) {
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
@@ -228,7 +235,7 @@ static char kWindowHelperKey;
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * 0.5);
+            CGFloat requiredTrans = isLandscape ? kLPVLandscapeSuccessTranslation : (screenWidth * 0.5);
             success = (trans.x > requiredTrans);
         }
         
@@ -302,6 +309,7 @@ static char kWindowHelperKey;
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
+        // Force all other internal gesture recognizers (like Bilibili's scroll/progress) to yield to this pan.
         return YES;
     }
     return NO;
