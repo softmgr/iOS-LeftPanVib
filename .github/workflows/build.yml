@@ -18,13 +18,13 @@ jobs:
             -Os -fvisibility=hidden \
             -target arm64-apple-ios14.0 \
             -miphoneos-version-min=14.0 \
-            -install_name @rpath/leftPan_vib.dylib \
+            -install_name @rpath/LeftPanVib.dylib \
             -framework UIKit -framework Foundation \
-            leftPan_vib.m -o leftPan_vib.dylib
-          codesign -f -s - leftPan_vib.dylib
+            leftPan_vib.m -o LeftPanVib.dylib
+          codesign -f -s - LeftPanVib.dylib
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: leftPan_vib
-          path: leftPan_vib.dylib
+          name: LeftPanVib
+          path: LeftPanVib.dylib
