@@ -12,16 +12,11 @@
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Success Thresholds (Tuned for maximum sensitivity on fast flicks)
-// Portrait
-#define kLPVPortraitSuccessTranslationRatio 0.35 
-#define kLPVPortraitSuccessVelocity 120.0        // Lowered for higher sensitivity
-#define kLPVPortraitMinFlickTranslation 8.0      // Lowered for tiny fast swipes
-
-// Landscape
-#define kLPVLandscapeSuccessTranslation 80.0
-#define kLPVLandscapeSuccessVelocity 120.0
-#define kLPVLandscapeMinFlickTranslation 8.0
+// 3. Fallback Success Thresholds (Used only in Landscape / Modal views)
+// Tuned exactly to Apple's internal physics standards for UIGestureRecognizer
+#define kLPVFallbackSuccessTranslation 100.0     // Translation distance required for slow drags
+#define kLPVFallbackSuccessVelocity 300.0        // Velocity required to be considered a 'flick'
+#define kLPVFallbackMinFlickTranslation 20.0     // Minimum distance required even if flicking extremely fast (Anti-jitter)
 
 
 static char kWindowHelperKey;
@@ -157,7 +152,7 @@ static char kWindowHelperKey;
     });
 }
 
-#pragma mark - Gesture & Predictive Haptic Handling
+#pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
@@ -198,27 +193,23 @@ static char kWindowHelperKey;
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
         
-        if (pan.state == UIGestureRecognizerStateEnded) {
-            CGPoint trans = [pan translationInView:pan.view];
-            CGPoint vel = [pan velocityInView:pan.view];
-            CGFloat screenWidth = pan.view.bounds.size.width;
-            
-            BOOL predictedToPop = NO;
-            if (vel.x > kLPVPortraitSuccessVelocity) {
-                predictedToPop = (trans.x > kLPVPortraitMinFlickTranslation);
-            } else if (vel.x < -kLPVPortraitSuccessVelocity) {
-                predictedToPop = NO;
-            } else {
-                predictedToPop = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio));
-            }
-            
-            if (predictedToPop) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-                    [feedback prepare];
-                    [feedback impactOccurred];
-                });
-            }
+        // 核心更新：使用底层 API 直接向 iOS 转场协调器订阅“判决结果”
+        if (pan.state == UIGestureRecognizerStateBegan) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator ?: nav.transitionCoordinator;
+                if (coordinator && [coordinator initiallyInteractive]) {
+                    if (@available(iOS 10.0, *)) {
+                        [coordinator notifyWhenInteractionEndsUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+                            // isCancelled == NO 说明系统允许了这次返回，此时触发震动分毫不差
+                            if (![context isCancelled]) {
+                                UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                                [feedback prepare];
+                                [feedback impactOccurred];
+                            }
+                        }];
+                    }
+                }
+            });
         }
     } else {
         [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC nav:nav];
@@ -232,22 +223,13 @@ static char kWindowHelperKey;
         CGFloat screenWidth = pan.view.bounds.size.width;
         
         BOOL success = NO;
-        if (isLandscape) {
-            if (vel.x > kLPVLandscapeSuccessVelocity) {
-                success = (trans.x > kLPVLandscapeMinFlickTranslation);
-            } else if (vel.x < -kLPVLandscapeSuccessVelocity) {
-                success = NO;
-            } else {
-                success = (trans.x > kLPVLandscapeSuccessTranslation);
-            }
+        if (vel.x > kLPVFallbackSuccessVelocity) {
+            success = (trans.x > kLPVFallbackMinFlickTranslation);
+        } else if (vel.x < -kLPVFallbackSuccessVelocity) {
+            success = NO;
         } else {
-            if (vel.x > kLPVPortraitSuccessVelocity) {
-                success = (trans.x > kLPVPortraitMinFlickTranslation);
-            } else if (vel.x < -kLPVPortraitSuccessVelocity) {
-                success = NO;
-            } else {
-                success = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio));
-            }
+            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * 0.5);
+            success = (trans.x > requiredTrans);
         }
         
         if (success) {
