@@ -132,21 +132,37 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - Device Orientation Control
+#pragma mark - Device Orientation Control (Aggressive Method)
 
 // Force the device to rotate back to Portrait mode (Exits full-screen videos)
 - (void)forcePortraitOrientation {
-    if (@available(iOS 16.0, *)) {
-        UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
-        if (scene) {
-            UIWindowSceneGeometryPreferencesIOS *geometryPreferences = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
-            [scene requestGeometryUpdateWithPreferences:geometryPreferences errorHandler:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // 1. Force UIDevice value via KVC (Triggers KVO for custom video players)
+        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
+        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
+        
+        // 2. Explicitly broadcast the orientation change notification (Crucial for Bilibili)
+        [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
+        
+        // 3. System-level geometry request for iOS 16+
+        if (@available(iOS 16.0, *)) {
+            UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
+            if (!scene) {
+                for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+                    if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
+                        scene = (UIWindowScene *)s;
+                        break;
+                    }
+                }
+            }
+            if (scene) {
+                UIWindowSceneGeometryPreferencesIOS *geom = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
+                [scene requestGeometryUpdateWithPreferences:geom errorHandler:nil];
+            }
+        } else {
+            [UIViewController attemptRotationToDeviceOrientation];
         }
-    } else {
-        [[UIDevice currentDevice] setValue:@(UIInterfaceOrientationUnknown) forKey:@"orientation"];
-        [[UIDevice currentDevice] setValue:@(UIInterfaceOrientationPortrait) forKey:@"orientation"];
-        [UIViewController attemptRotationToDeviceOrientation];
-    }
+    });
 }
 
 #pragma mark - Gesture & Predictive Haptic Handling
@@ -233,7 +249,7 @@ static char kWindowHelperKey;
                 
                 // 2. Perform Back/Dismiss OR Exit Fullscreen
                 if (isLandscape) {
-                    // Landscape: Exit full screen video by forcing rotation to portrait
+                    // Landscape: Exit full screen video by aggressively forcing rotation
                     [self forcePortraitOrientation];
                 } else {
                     // Portrait: Standard pop / dismiss
