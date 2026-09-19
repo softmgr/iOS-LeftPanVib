@@ -7,18 +7,15 @@
 
 // 1. Trigger Zones
 #define kLPVPortraitZoneRatio (2.0 / 3.0)
-// WIDENED: 60 points covers a full thumb width to easily catch edge swipes in landscape.
 #define kLPVLandscapeZoneWidth 60.0
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Fallback Success Thresholds (Used only in Landscape / Modal views)
-// Tuned exactly to Apple's internal physics standards for UIGestureRecognizer
+// 3. Fallback Success Thresholds
 #define kLPVFallbackSuccessTranslation 100.0     
 #define kLPVFallbackSuccessVelocity 300.0        
 #define kLPVFallbackMinFlickTranslation 20.0     
-
 
 static char kWindowHelperKey;
 
@@ -42,7 +39,6 @@ static char kWindowHelperKey;
 }
 @end
 
-
 #pragma mark - Main Window Helper
 
 @interface LeftPanWindowHelper : NSObject <UIGestureRecognizerDelegate>
@@ -62,7 +58,6 @@ static char kWindowHelperKey;
         _pan = [[LPVReversePanGesture alloc] initWithTarget:self action:@selector(handlePan:)];
         _pan.delegate = self;
         _pan.cancelsTouchesInView = YES;
-        // DELAY TOUCHES: Crucial for preventing scroll views / progress bars from stealing the swipe.
         _pan.delaysTouchesBegan = YES;
         [window addGestureRecognizer:_pan];
     }
@@ -102,8 +97,15 @@ static char kWindowHelperKey;
     return nil;
 }
 
-// 核心边界：只接管拥有标准导航栈或模态弹窗的页面
+// 核心边界分析，新增了“特定应用白名单”机制
 + (BOOL)canGoBack:(UIViewController *)topVC {
+    // 1. 白名单检查（如百度贴吧、微信等自研路由巨头）
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if ([bundleID isEqualToString:@"com.baidu.tieba"] || [bundleID isEqualToString:@"com.tencent.xin"]) {
+        return YES; // 无视导航栈状态，直接放行手势探测
+    }
+    
+    // 2. 原生标准检查
     if (!topVC) return NO;
     UINavigationController *nav = [self findNavControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) {
@@ -115,7 +117,6 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// 核心边界：严禁在游戏引擎渲染视图中触发，防止干扰游戏操作
 + (BOOL)isGameViewController:(UIViewController *)vc {
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
@@ -128,7 +129,6 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// 三层拦截检测：精准判断当前应用是否支持竖屏
 + (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
     if (topVC) {
         UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
@@ -136,20 +136,15 @@ static char kWindowHelperKey;
             return NO; 
         }
     }
-    
     UIInterfaceOrientationMask appMask = [[UIApplication sharedApplication] supportedInterfaceOrientationsForWindow:window];
     if (appMask != 0 && !(appMask & UIInterfaceOrientationMaskPortrait) && !(appMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
         return NO; 
     }
-    
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
         NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
-        if (ipadOrientations) {
-            supportedOrientations = ipadOrientations;
-        }
+        if (ipadOrientations) supportedOrientations = ipadOrientations;
     }
-    
     if (supportedOrientations && [supportedOrientations isKindOfClass:[NSArray class]]) {
         BOOL hasPortrait = NO;
         for (NSString *orientation in supportedOrientations) {
@@ -159,21 +154,16 @@ static char kWindowHelperKey;
                 break;
             }
         }
-        if (!hasPortrait) {
-            return NO; 
-        }
+        if (!hasPortrait) return NO; 
     }
     return YES;
 }
-
-#pragma mark - Device Orientation Control (Delayed Override)
 
 - (void)forcePortraitOrientation {
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
         [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
@@ -198,6 +188,66 @@ static char kWindowHelperKey;
     });
 }
 
+#pragma mark - Runtime Gesture Target-Action Extraction
+
+// 核心函数：利用 C 语言级的指针内存偏移计算，强行越权提取宿主手势内部 Target 的真实 action 指针
+- (BOOL)extractAndHijackActionFromGesture:(UIGestureRecognizer *)gesture {
+    @try {
+        NSArray *targets = [gesture valueForKey:@"targets"];
+        if (!targets || targets.count == 0) return NO;
+        
+        // 获取私有的 UIGestureRecognizerTarget 实例
+        id targetObj = targets.firstObject; 
+        id target = [targetObj valueForKey:@"target"];
+        if (!target) return NO;
+        
+        // 查找私有变量 _action 的内存偏移量
+        Ivar actionIvar = class_getInstanceVariable([targetObj class], "_action");
+        if (!actionIvar) return NO;
+        
+        // 关键操作：强转为 uint8_t 字节指针，基于基址加上偏移量读取 SEL
+        SEL action = *(SEL *)((uint8_t *)(__bridge void *)targetObj + ivar_getOffset(actionIvar));
+        
+        if (action && [target respondsToSelector:action]) {
+            self.systemTarget = target;
+            self.systemAction = action;
+            self.useFallbackMode = NO; // 接管成功，移交系统或宿主自行处理动画
+            return YES;
+        }
+    } @catch (NSException *e) {}
+    return NO;
+}
+
+// 向上遍历视图树，搜索带有返回属性的手势
+- (BOOL)searchAndHijackHostReturnGestureInView:(UIView *)view {
+    UIView *currentView = view;
+    while (currentView) {
+        for (UIGestureRecognizer *g in currentView.gestureRecognizers) {
+            if (!g.enabled) continue;
+            
+            // 匹配条件1：系统的左侧边缘滑动手势
+            BOOL isLeftEdgePan = [g isKindOfClass:[UIScreenEdgePanGestureRecognizer class]] && 
+                                 (((UIScreenEdgePanGestureRecognizer *)g).edges == UIRectEdgeLeft);
+            
+            // 匹配条件2：名称包含相关字眼的面版滑动（应对各类 TBCPopGestureRecognizer 等魔改库）
+            NSString *className = NSStringFromClass([g class]);
+            BOOL isCustomPop = ([g isKindOfClass:[UIPanGestureRecognizer class]] && 
+                                ([className containsString:@"Pop"] || 
+                                 [className containsString:@"Back"] || 
+                                 [className containsString:@"Transition"]));
+            
+            if (isLeftEdgePan || isCustomPop) {
+                if ([self extractAndHijackActionFromGesture:g]) {
+                    return YES; // 成功窃取！
+                }
+            }
+        }
+        currentView = currentView.superview;
+    }
+    return NO;
+}
+
+
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
@@ -217,25 +267,28 @@ static char kWindowHelperKey;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
+        BOOL hijackSuccess = NO;
+
+        // 1. 尝试窃取 iOS 原生的导航手势
         if (nav && !isLandscape) {
-            @try {
-                NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
-                if (targets && targets.count > 0) {
-                    id internalTarget = [targets.firstObject valueForKey:@"target"];
-                    SEL internalAction = NSSelectorFromString(@"handleNavigationTransition:");
-                    if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
-                        self.systemTarget = internalTarget;
-                        self.systemAction = internalAction;
-                        self.useFallbackMode = NO; 
-                    }
-                }
-            } @catch (NSException *e) { }
+            hijackSuccess = [self extractAndHijackActionFromGesture:nav.interactivePopGestureRecognizer];
+        }
+        
+        // 2. 如果原生手势不存在或不可用，且当前为非横屏，启动“白名单”专属的深度搜捕机制
+        if (!hijackSuccess && !isLandscape) {
+            NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+            if ([bundleID isEqualToString:@"com.baidu.tieba"] || [bundleID isEqualToString:@"com.tencent.xin"]) {
+                // 优先在当前 VC 视图中搜寻，再搜寻全屏幕 Window 层
+                hijackSuccess = [self searchAndHijackHostReturnGestureInView:topVC.view] || 
+                                [self searchAndHijackHostReturnGestureInView:window];
+            }
         }
     }
 
     if (!self.useFallbackMode && self.systemTarget) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        // 直接将翻转后的参数喂给宿主的接收器，宿主会以为这是来自屏幕左侧的标准原生滑动
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
         
@@ -246,7 +299,6 @@ static char kWindowHelperKey;
                     if (@available(iOS 10.0, *)) {
                         [coordinator notifyWhenInteractionEndsUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
-// 宏定义：如果未定义 DISABLE_VIBRATION，则编译这部分震动代码
 #ifndef DISABLE_VIBRATION
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
@@ -283,7 +335,6 @@ static char kWindowHelperKey;
             BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
             
             dispatch_async(dispatch_get_main_queue(), ^{
-// 宏定义：如果未定义 DISABLE_VIBRATION，则编译这部分震动代码
 #ifndef DISABLE_VIBRATION
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
@@ -322,38 +373,24 @@ static char kWindowHelperKey;
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if (isLandscape) {
-        if ([LeftPanWindowHelper isGameViewController:topVC]) {
-            return NO;
-        }
-        if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
-            return NO;
-        }
+        if ([LeftPanWindowHelper isGameViewController:topVC]) return NO;
+        if (loc.x < screenWidth - kLPVLandscapeZoneWidth) return NO;
     } else {
-        if (loc.x < screenWidth * kLPVPortraitZoneRatio) {
-            return NO;
-        }
+        if (loc.x < screenWidth * kLPVPortraitZoneRatio) return NO;
     }
 
     CGPoint rawVel = [self.pan rawVelocityInView:self.pan.view];
-    if (rawVel.x >= kLPVGestureStartVelocityThreshold) { 
-        return NO;
-    }
-    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) { 
-        return NO;
-    }
+    if (rawVel.x >= kLPVGestureStartVelocityThreshold) return NO;
+    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) return NO;
 
-    if (![LeftPanWindowHelper canGoBack:topVC]) {
-        return NO;
-    }
+    if (![LeftPanWindowHelper canGoBack:topVC]) return NO;
 
     return YES;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (gestureRecognizer == self.pan) {
-        if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
-            return NO;
-        }
+        if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) return NO;
         return YES;
     }
     return NO;
