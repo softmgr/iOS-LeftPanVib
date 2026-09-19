@@ -7,10 +7,11 @@
 ## ✨ Features
 
 - **🔄 Native-Like Interaction**: Leverages a custom coordinate inversion engine (`LPVReversePanGesture`) to trick the iOS native interactive pop transition engine into granting smooth, fluid transition animations (supports edge scrubbing, hover, and rubber-band bouncing).
-- **📳 Precision Haptic Feedback**: Uses iOS native `UIImpactFeedbackGenerator` (Light style, matching system keyboard haptics) coordinated with the system transition engine to vibrate **only** when a navigation pop or full-screen exit actually succeeds.
+- **📳 Precision Haptic Feedback (Optional)**: Uses iOS native `UIImpactFeedbackGenerator` (Light style) coordinated with the system transition engine to vibrate **only** when a navigation pop or full-screen exit actually succeeds. (A vibration-free binary is also available).
 - **📐 Smart Orientation & Zone Control**: 
-  - **Portrait Mode**: Active only in the rightmost $1/3$ of the screen to avoid interfering with central app content.
-  - **Landscape Mode**: Tailored for full-screen video players. Restricts the trigger zone to the extreme right edge ($60\,\text{pt}$) and automatically handles full-screen exit by forcing rotation back to portrait.
+  - **Portrait Mode**: Active only in the rightmost 1/3 of the screen to avoid interfering with central app content.
+  - **Landscape Mode**: Tailored for full-screen video players. Restricts the trigger zone to the extreme right edge (60 pt) and automatically handles full-screen exit by forcing rotation back to portrait.
+  - **Landscape-Only App Safety**: Intelligently detects apps that strictly support landscape mode (via 3-layer mask & `Info.plist` checks) and gracefully falls back to standard pop/dismiss actions without forcing orientation.
   - **Game Protection**: Automatically detects and bypasses known game engine rendering views (`Unity`, `OpenGL/EAGL`, `Metal/MTKView`) to prevent accidental triggers during gameplay.
 - **⚡ Zero Dependency**: Built purely on standard, stable official `UIKit` and `Objective-C Runtime` APIs. No external dependencies (like CydiaSubstrate or libhooker) required.
 - **🛡️ Conflict Resolution**: Overrides lower-level app scroll views and gesture containers (such as Bilibili's comment section or progress bars) via forced touch-delay interception (`delaysTouchesBegan`).
@@ -19,7 +20,7 @@
 
 ## 📱 Compatibility
 
-- **iOS Support**: iOS $14.0+$ (Fully compatible up to the latest iOS versions).
+- **iOS Support**: iOS 14.0+ (Fully compatible up to the latest iOS versions).
 - **Injection Environments**: TrollStore (TrollFools), LiveContainer, SideStore, and custom IPA re-packaging.
 - **Architecture**: Standard `arm64` (fully compatible with modern `arm64e` devices).
 
