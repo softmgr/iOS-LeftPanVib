@@ -2,12 +2,30 @@
 #import <objc/runtime.h>
 
 // ---------------------------------------------------------
-// CONFIGURATION
+// CONFIGURATION (Constants for easy maintenance)
 // ---------------------------------------------------------
-// Portrait mode: trigger zone is the rightmost 1/3 of the screen.
+
+// 1. Trigger Zones (Where the gesture starts)
+// Portrait: Gesture active only in the rightmost 1/3 of the screen.
 #define kLPVPortraitZoneRatio (2.0 / 3.0)
-// Landscape mode: narrow trigger zone (~one finger width from the right edge).
+// Landscape: Gesture active only in the extreme right edge (e.g., 45 points).
 #define kLPVLandscapeZoneWidth 45.0
+
+// 2. Intent Thresholds (How fast/horizontal the finger must move to begin)
+// Minimum X-axis velocity to recognize a left swipe intent.
+#define kLPVGestureStartVelocityThreshold -40.0
+
+// 3. Success Thresholds (How far/fast to swipe to actually trigger the 'Back' action)
+// Portrait: Must swipe at least 1/3 of the screen width...
+#define kLPVPortraitSuccessTranslationRatio (1.0 / 3.0)
+// ...OR swipe with a high velocity (flick).
+#define kLPVPortraitSuccessVelocity 300.0
+
+// Landscape: Must swipe at least 80 points...
+#define kLPVLandscapeSuccessTranslation 80.0
+// ...OR swipe with a high velocity (flick).
+#define kLPVLandscapeSuccessVelocity 300.0
+
 
 static char kWindowHelperKey;
 
@@ -102,7 +120,6 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// Check if the current view is rendered by a known game engine
 + (BOOL)isGameViewController:(UIViewController *)vc {
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
@@ -115,13 +132,29 @@ static char kWindowHelperKey;
     return NO;
 }
 
+#pragma mark - Device Orientation Control
+
+// Force the device to rotate back to Portrait mode (Exits full-screen videos)
+- (void)forcePortraitOrientation {
+    if (@available(iOS 16.0, *)) {
+        UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
+        if (scene) {
+            UIWindowSceneGeometryPreferencesIOS *geometryPreferences = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
+            [scene requestGeometryUpdateWithPreferences:geometryPreferences errorHandler:nil];
+        }
+    } else {
+        [[UIDevice currentDevice] setValue:@(UIInterfaceOrientationUnknown) forKey:@"orientation"];
+        [[UIDevice currentDevice] setValue:@(UIInterfaceOrientationPortrait) forKey:@"orientation"];
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
+}
+
 #pragma mark - Gesture & Predictive Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
     
-    // Check orientation
     UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
     if (@available(iOS 13.0, *)) {
@@ -136,7 +169,6 @@ static char kWindowHelperKey;
         self.useFallbackMode = YES;
 
         // ONLY hijack native transition in Portrait mode.
-        // Hijacking in Landscape causes severe orientation glitching (flashing portrait).
         if (nav && !isLandscape) {
             @try {
                 NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
@@ -153,7 +185,6 @@ static char kWindowHelperKey;
         }
     }
 
-    // Forward the gesture to native iOS transition engine (Portrait only)
     if (!self.useFallbackMode && self.systemTarget) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -166,8 +197,7 @@ static char kWindowHelperKey;
             CGPoint vel = [pan velocityInView:pan.view];
             CGFloat screenWidth = pan.view.bounds.size.width;
             
-            // Portrait threshold: 1/3 of width or fast flick
-            if (trans.x > screenWidth / 3.0 || vel.x > 300.0) {
+            if (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio) || vel.x > kLPVPortraitSuccessVelocity) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                     [feedback prepare];
@@ -177,29 +207,41 @@ static char kWindowHelperKey;
         }
     } else {
         // Fallback execution for Landscape or Modal views
-        [self handleFallbackPan:pan topVC:topVC nav:nav];
+        [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC nav:nav];
     }
 }
 
-// Fallback logic for Landscape mode & Presented ViewControllers
-- (void)handleFallbackPan:(LPVReversePanGesture *)pan topVC:(UIViewController *)topVC nav:(UINavigationController *)nav {
+- (void)handleFallbackPan:(LPVReversePanGesture *)pan isLandscape:(BOOL)isLandscape topVC:(UIViewController *)topVC nav:(UINavigationController *)nav {
     if (pan.state == UIGestureRecognizerStateEnded) {
         CGPoint trans = [pan translationInView:pan.view];
         CGPoint vel = [pan velocityInView:pan.view];
+        CGFloat screenWidth = pan.view.bounds.size.width;
         
-        // Landscape threshold: Swiping more than 80 points is considered a success
-        if (trans.x > 80.0 || vel.x > 300.0) {
+        BOOL success = NO;
+        if (isLandscape) {
+            success = (trans.x > kLPVLandscapeSuccessTranslation || vel.x > kLPVLandscapeSuccessVelocity);
+        } else {
+            success = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio) || vel.x > kLPVPortraitSuccessVelocity);
+        }
+        
+        if (success) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 // 1. Haptic Feedback
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
                 
-                // 2. Perform Back/Dismiss
-                if (nav && nav.viewControllers.count > 1) {
-                    [nav popViewControllerAnimated:YES];
-                } else if (topVC && topVC.presentingViewController) {
-                    [topVC dismissViewControllerAnimated:YES completion:nil];
+                // 2. Perform Back/Dismiss OR Exit Fullscreen
+                if (isLandscape) {
+                    // Landscape: Exit full screen video by forcing rotation to portrait
+                    [self forcePortraitOrientation];
+                } else {
+                    // Portrait: Standard pop / dismiss
+                    if (nav && nav.viewControllers.count > 1) {
+                        [nav popViewControllerAnimated:YES];
+                    } else if (topVC && topVC.presentingViewController) {
+                        [topVC dismissViewControllerAnimated:YES completion:nil];
+                    }
                 }
             });
         }
@@ -224,32 +266,26 @@ static char kWindowHelperKey;
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if (isLandscape) {
-        // Game Check: Block if it is a known game engine view
         if ([LeftPanWindowHelper isGameViewController:topVC]) {
             return NO;
         }
-        // Landscape Zone: Only the extreme right edge (~45 points, ~one finger width)
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
         }
     } else {
-        // Portrait Zone: Rightmost 1/3 of the screen
         if (loc.x < screenWidth * kLPVPortraitZoneRatio) {
             return NO;
         }
     }
 
-    // Intent must be a Left Swipe (negative raw X velocity)
     CGPoint rawVel = [self.pan rawVelocityInView:self.pan.view];
-    if (rawVel.x >= -40) { 
+    if (rawVel.x >= kLPVGestureStartVelocityThreshold) { 
         return NO;
     }
-    // Must be primarily horizontal
     if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) { 
         return NO;
     }
 
-    // Prevent triggering if the user is already on the root page
     if (![LeftPanWindowHelper canGoBack:topVC]) {
         return NO;
     }
