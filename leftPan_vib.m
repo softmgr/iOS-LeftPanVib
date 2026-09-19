@@ -6,44 +6,52 @@
 // ---------------------------------------------------------
 
 // 1. Trigger Zones (Where the gesture starts)
-// Portrait: Gesture active only in the rightmost 1/3 of the screen.
 #define kLPVPortraitZoneRatio (2.0 / 3.0)
-// Landscape: Gesture active only in the extreme right edge (e.g., 45 points).
 #define kLPVLandscapeZoneWidth 45.0
 
 // 2. Intent Thresholds (How fast/horizontal the finger must move to begin)
-// Minimum X-axis velocity to recognize a left swipe intent.
 #define kLPVGestureStartVelocityThreshold -40.0
 
 // 3. Success Thresholds (How far/fast to swipe to actually trigger the 'Back' action)
-// Portrait: Must swipe at least 1/3 of the screen width...
 #define kLPVPortraitSuccessTranslationRatio (1.0 / 3.0)
-// ...OR swipe with a high velocity (flick).
 #define kLPVPortraitSuccessVelocity 300.0
-
-// Landscape: Must swipe at least 80 points...
 #define kLPVLandscapeSuccessTranslation 80.0
-// ...OR swipe with a high velocity (flick).
 #define kLPVLandscapeSuccessVelocity 300.0
 
 
 static char kWindowHelperKey;
 
-#pragma mark - Custom Gesture Recognizer (Coordinate Inversion)
+#pragma mark - Custom Gesture Recognizer (Coordinate Inversion & System Cheating)
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
+@property (nonatomic, assign) BOOL forcePop;
+@property (nonatomic, assign) BOOL forceCancel;
 - (CGPoint)rawVelocityInView:(UIView *)view;
+- (CGPoint)rawTranslationInView:(UIView *)view;
 @end
 
 @implementation LPVReversePanGesture
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
+- (CGPoint)rawTranslationInView:(UIView *)view {
+    return [super translationInView:view];
+}
+
+// Invert X translation. If forced, cheat the system engine to guarantee outcome.
 - (CGPoint)translationInView:(UIView *)view {
+    if (self.forcePop) return CGPointMake(view ? view.bounds.size.width : 1000.0, 0);
+    if (self.forceCancel) return CGPointZero;
+    
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
+
+// Invert X velocity. If forced, cheat the system engine to guarantee outcome.
 - (CGPoint)velocityInView:(UIView *)view {
+    if (self.forcePop) return CGPointMake(2000.0, 0);
+    if (self.forceCancel) return CGPointZero;
+    
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
 }
@@ -132,19 +140,23 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - Device Orientation Control (Aggressive Method)
+#pragma mark - Device Orientation Control (Ultimate Penetration)
 
-// Force the device to rotate back to Portrait mode (Exits full-screen videos)
+- (void)legacyForcePortrait {
+    SEL selector = NSSelectorFromString(@"setOrientation:");
+    if ([[UIDevice currentDevice] respondsToSelector:selector]) {
+        NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:[UIDevice instanceMethodSignatureForSelector:selector]];
+        [invocation setSelector:selector];
+        [invocation setTarget:[UIDevice currentDevice]];
+        int val = UIInterfaceOrientationPortrait;
+        [invocation setArgument:&val atIndex:2];
+        [invocation invoke];
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
+}
+
 - (void)forcePortraitOrientation {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // 1. Force UIDevice value via KVC (Triggers KVO for custom video players)
-        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
-        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
-        
-        // 2. Explicitly broadcast the orientation change notification (Crucial for Bilibili)
-        [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
-        
-        // 3. System-level geometry request for iOS 16+
         if (@available(iOS 16.0, *)) {
             UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
             if (!scene) {
@@ -157,15 +169,17 @@ static char kWindowHelperKey;
             }
             if (scene) {
                 UIWindowSceneGeometryPreferencesIOS *geom = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
-                [scene requestGeometryUpdateWithPreferences:geom errorHandler:nil];
+                [scene requestGeometryUpdateWithPreferences:geom errorHandler:^(NSError *error) {
+                    [self legacyForcePortrait];
+                }];
+                return;
             }
-        } else {
-            [UIViewController attemptRotationToDeviceOrientation];
         }
+        [self legacyForcePortrait];
     });
 }
 
-#pragma mark - Gesture & Predictive Haptic Handling
+#pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
@@ -184,7 +198,6 @@ static char kWindowHelperKey;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        // ONLY hijack native transition in Portrait mode.
         if (nav && !isLandscape) {
             @try {
                 NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
@@ -201,58 +214,57 @@ static char kWindowHelperKey;
         }
     }
 
-    if (!self.useFallbackMode && self.systemTarget) {
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        [self.systemTarget performSelector:self.systemAction withObject:pan];
-        #pragma clang diagnostic pop
-        
-        // Portrait Predictive Haptic
-        if (pan.state == UIGestureRecognizerStateEnded) {
-            CGPoint trans = [pan translationInView:pan.view];
-            CGPoint vel = [pan velocityInView:pan.view];
-            CGFloat screenWidth = pan.view.bounds.size.width;
-            
-            if (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio) || vel.x > kLPVPortraitSuccessVelocity) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-                    [feedback prepare];
-                    [feedback impactOccurred];
-                });
-            }
-        }
-    } else {
-        // Fallback execution for Landscape or Modal views
-        [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC nav:nav];
-    }
-}
-
-- (void)handleFallbackPan:(LPVReversePanGesture *)pan isLandscape:(BOOL)isLandscape topVC:(UIViewController *)topVC nav:(UINavigationController *)nav {
-    if (pan.state == UIGestureRecognizerStateEnded) {
-        CGPoint trans = [pan translationInView:pan.view];
-        CGPoint vel = [pan velocityInView:pan.view];
+    BOOL isEnded = (pan.state == UIGestureRecognizerStateEnded);
+    BOOL isCancelled = (pan.state == UIGestureRecognizerStateCancelled);
+    BOOL shouldPop = NO;
+    
+    // Core Logic: Decide the fate of this gesture BEFORE passing it to the system engine
+    if (isEnded) {
+        CGPoint rawTrans = [pan rawTranslationInView:pan.view];
+        CGPoint rawVel = [pan rawVelocityInView:pan.view];
+        CGFloat transX = -rawTrans.x; // Realize physical left swipe as positive value
+        CGFloat velX = -rawVel.x;
         CGFloat screenWidth = pan.view.bounds.size.width;
         
-        BOOL success = NO;
         if (isLandscape) {
-            success = (trans.x > kLPVLandscapeSuccessTranslation || vel.x > kLPVLandscapeSuccessVelocity);
+            shouldPop = (transX > kLPVLandscapeSuccessTranslation || velX > kLPVLandscapeSuccessVelocity);
         } else {
-            success = (trans.x > (screenWidth * kLPVPortraitSuccessTranslationRatio) || vel.x > kLPVPortraitSuccessVelocity);
+            shouldPop = (transX > (screenWidth * kLPVPortraitSuccessTranslationRatio) || velX > kLPVPortraitSuccessVelocity);
         }
+    }
+    
+    // Setup system engine constraints and haptics
+    if (isEnded || isCancelled) {
+        // If we decided it should pop, we force the system engine to see 100% progress.
+        // If we decided it shouldn't, we force the system engine to see 0% progress.
+        pan.forcePop = shouldPop;
+        pan.forceCancel = !shouldPop;
         
-        if (success) {
+        if (shouldPop) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                // 1. Haptic Feedback
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
-                
-                // 2. Perform Back/Dismiss OR Exit Fullscreen
+            });
+        }
+    } else {
+        pan.forcePop = NO;
+        pan.forceCancel = NO;
+    }
+
+    // Execute Actions
+    if (!self.useFallbackMode && self.systemTarget) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        // System engine will now read our 'forced' values and 100% obey our decision
+        [self.systemTarget performSelector:self.systemAction withObject:pan];
+        #pragma clang diagnostic pop
+    } else {
+        if (isEnded && shouldPop) {
+            dispatch_async(dispatch_get_main_queue(), ^{
                 if (isLandscape) {
-                    // Landscape: Exit full screen video by aggressively forcing rotation
                     [self forcePortraitOrientation];
                 } else {
-                    // Portrait: Standard pop / dismiss
                     if (nav && nav.viewControllers.count > 1) {
                         [nav popViewControllerAnimated:YES];
                     } else if (topVC && topVC.presentingViewController) {
@@ -264,7 +276,7 @@ static char kWindowHelperKey;
     }
 }
 
-#pragma mark - UIGestureRecognizerDelegate (Priority & Conflict Resolution)
+#pragma mark - UIGestureRecognizerDelegate
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
