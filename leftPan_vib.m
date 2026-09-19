@@ -1,6 +1,14 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+// ---------------------------------------------------------
+// CONFIGURATION
+// ---------------------------------------------------------
+// Define the starting trigger zone ratio.
+// (2.0 / 3.0) means the gesture will only be recognized in the 
+// rightmost 1/3 of the screen. The left 2/3 will be ignored.
+#define kLPVActiveZoneRatio (2.0 / 3.0)
+
 static char kWindowHelperKey;
 
 #pragma mark - Custom Gesture Recognizer (Coordinate Inversion)
@@ -105,13 +113,13 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - Gesture Handling
+#pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    
     if (pan.state == UIGestureRecognizerStateBegan) {
-        UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
         UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
-        
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
@@ -136,37 +144,47 @@ static char kWindowHelperKey;
     }
 
     // Forward the inverted pan gesture to the native iOS transition engine.
-    // This provides the exact native feel: scrubs back/forth, respects threshold, bounces back if cancelled.
     if (!self.useFallbackMode && self.systemTarget) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
+        
+        // When the user lifts their finger, the native transition decides whether to pop or snap back.
+        // We observe the transition coordinator to vibrate ONLY if the pop actually succeeds.
+        if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
+            id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator;
+            if (coordinator && [coordinator initiallyInteractive]) {
+                [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+                    // isCancelled == NO means the user swiped far enough to complete the pop
+                    if (![context isCancelled]) {
+                        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                        [feedback prepare];
+                        [feedback impactOccurred];
+                    }
+                }];
+            }
+        }
     } else {
-        [self handleFallbackPan:pan];
-    }
-
-    // Trigger a light haptic vibration only when the user's finger leaves the screen (gesture ended/cancelled)
-    if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
-        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        [feedback prepare];
-        [feedback impactOccurred];
+        [self handleFallbackPan:pan topVC:topVC];
     }
 }
 
 // Fallback logic for presented ViewControllers without a NavigationController
-- (void)handleFallbackPan:(LPVReversePanGesture *)pan {
+- (void)handleFallbackPan:(LPVReversePanGesture *)pan topVC:(UIViewController *)topVC {
     if (pan.state == UIGestureRecognizerStateEnded) {
         // Since pan is inverted, a left swipe results in a POSITIVE X translation
         CGPoint trans = [pan translationInView:pan.view];
         CGPoint vel = [pan velocityInView:pan.view];
         
-        // Only dismiss if the user swiped far enough (> 80pt) or fast enough.
+        // Only dismiss and vibrate if the user swiped far enough (> 80pt) or fast enough.
         // If they scrubbed back (trans.x < 80), nothing happens (simulating a snap back).
         if (trans.x > 80.0 || vel.x > 400.0) {
-            UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
             if (topVC && topVC.presentingViewController) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                    [feedback prepare];
+                    [feedback impactOccurred];
                     [topVC dismissViewControllerAnimated:YES completion:nil];
                 });
             }
@@ -182,8 +200,8 @@ static char kWindowHelperKey;
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
-    // 1. Touch origin must be in the right half of the screen (40% ~ 100% of width)
-    if (loc.x < screenWidth * 0.40) {
+    // 1. Touch origin limit: Must be in the rightmost 1/3 of the screen.
+    if (loc.x < screenWidth * kLPVActiveZoneRatio) {
         return NO;
     }
 
