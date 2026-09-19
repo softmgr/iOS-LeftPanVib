@@ -128,9 +128,8 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// 三层拦截检测：精准判断当前应用是否支持竖屏 (V20 新增 iPad 专属键值兼容)
+// 三层拦截检测：精准判断当前应用是否支持竖屏
 + (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
-    // 1. Controller Specific Override
     if (topVC) {
         UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
         if (vcMask != 0 && !(vcMask & UIInterfaceOrientationMaskPortrait) && !(vcMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
@@ -138,13 +137,11 @@ static char kWindowHelperKey;
         }
     }
     
-    // 2. Global Application Mask (Dynamic)
     UIInterfaceOrientationMask appMask = [[UIApplication sharedApplication] supportedInterfaceOrientationsForWindow:window];
     if (appMask != 0 && !(appMask & UIInterfaceOrientationMaskPortrait) && !(appMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
         return NO; 
     }
     
-    // 3. Info.plist Static Check (Fallback with iPad support)
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
         NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
@@ -166,18 +163,13 @@ static char kWindowHelperKey;
             return NO; 
         }
     }
-    
     return YES;
 }
 
 #pragma mark - Device Orientation Control (Delayed Override)
 
 - (void)forcePortraitOrientation {
-    // Weak self pattern to prevent retain cycles in the dispatch block
     __weak typeof(self) weakSelf = self;
-    
-    // 0.1s DELAY: Wait for internal state machine to finish updating UI,
-    // THEN aggressively force the orientation to Portrait. This prevents state overwrites.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -254,9 +246,12 @@ static char kWindowHelperKey;
                     if (@available(iOS 10.0, *)) {
                         [coordinator notifyWhenInteractionEndsUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
+// 宏定义：如果未定义 DISABLE_VIBRATION，则编译这部分震动代码
+#ifndef DISABLE_VIBRATION
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
                                 [feedback impactOccurred];
+#endif
                             }
                         }];
                     }
@@ -288,9 +283,12 @@ static char kWindowHelperKey;
             BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
             
             dispatch_async(dispatch_get_main_queue(), ^{
+// 宏定义：如果未定义 DISABLE_VIBRATION，则编译这部分震动代码
+#ifndef DISABLE_VIBRATION
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
+#endif
                 
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
@@ -344,7 +342,6 @@ static char kWindowHelperKey;
         return NO;
     }
 
-    // 如果不能进行标准的 iOS 导航返回，则手势直接静默失败，将控制权还给宿主 App
     if (![LeftPanWindowHelper canGoBack:topVC]) {
         return NO;
     }
@@ -357,7 +354,6 @@ static char kWindowHelperKey;
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
-        // Force all other internal gesture recognizers to yield to this pan.
         return YES;
     }
     return NO;
