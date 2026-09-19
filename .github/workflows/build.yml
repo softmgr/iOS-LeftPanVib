@@ -12,9 +12,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compile
+      - name: Compile (Release Mode)
         run: |
           xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
+            -Os -fvisibility=hidden \
             -target arm64-apple-ios14.0 \
             -miphoneos-version-min=14.0 \
             -install_name @rpath/leftPan_vib.dylib \
