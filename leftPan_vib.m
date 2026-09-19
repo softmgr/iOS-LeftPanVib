@@ -145,13 +145,18 @@ static char kWindowHelperKey;
 - (void)legacyForcePortrait {
     SEL selector = NSSelectorFromString(@"setOrientation:");
     if ([[UIDevice currentDevice] respondsToSelector:selector]) {
-        NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:[UIDevice instanceMethodSignatureForSelector:selector]];
-        [invocation setSelector:selector];
-        [invocation setTarget:[UIDevice currentDevice]];
-        int val = UIInterfaceOrientationPortrait;
-        [invocation setArgument:&val atIndex:2];
-        [invocation invoke];
-        [UIViewController attemptRotationToDeviceOrientation];
+        // [FIXED ERROR]: Use methodSignatureForSelector: on the instance, not the class.
+        NSMethodSignature *sig = [[UIDevice currentDevice] methodSignatureForSelector:selector];
+        if (sig) {
+            NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
+            [invocation setSelector:selector];
+            [invocation setTarget:[UIDevice currentDevice]];
+            // [FIXED CRASH]: Use NSInteger (64-bit) instead of int (32-bit).
+            NSInteger val = UIInterfaceOrientationPortrait;
+            [invocation setArgument:&val atIndex:2];
+            [invocation invoke];
+            [UIViewController attemptRotationToDeviceOrientation];
+        }
     }
 }
 
@@ -169,8 +174,11 @@ static char kWindowHelperKey;
             }
             if (scene) {
                 UIWindowSceneGeometryPreferencesIOS *geom = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
+                
+                // [FIXED WARNING]: Use __weak self to prevent retain cycle in the block.
+                __weak typeof(self) weakSelf = self;
                 [scene requestGeometryUpdateWithPreferences:geom errorHandler:^(NSError *error) {
-                    [self legacyForcePortrait];
+                    [weakSelf legacyForcePortrait];
                 }];
                 return;
             }
@@ -261,9 +269,10 @@ static char kWindowHelperKey;
         #pragma clang diagnostic pop
     } else {
         if (isEnded && shouldPop) {
+            __weak typeof(self) weakSelf = self;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (isLandscape) {
-                    [self forcePortraitOrientation];
+                    [weakSelf forcePortraitOrientation];
                 } else {
                     if (nav && nav.viewControllers.count > 1) {
                         [nav popViewControllerAnimated:YES];
