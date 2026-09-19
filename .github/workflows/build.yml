@@ -12,7 +12,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compile (Release Mode)
+      - name: Compile 1 - With Vibration (LeftPanVib.dylib)
         run: |
           xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
             -Os -fvisibility=hidden \
@@ -23,8 +23,22 @@ jobs:
             leftPan_vib.m -o LeftPanVib.dylib
           codesign -f -s - LeftPanVib.dylib
 
-      - name: Upload Artifact
+      - name: Compile 2 - Without Vibration (LeftPanWithoutVib.dylib)
+        run: |
+          xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
+            -Os -fvisibility=hidden \
+            -target arm64-apple-ios14.0 \
+            -miphoneos-version-min=14.0 \
+            -DDISABLE_VIBRATION \
+            -install_name @rpath/LeftPanWithoutVib.dylib \
+            -framework UIKit -framework Foundation \
+            leftPan_vib.m -o LeftPanWithoutVib.dylib
+          codesign -f -s - LeftPanWithoutVib.dylib
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: LeftPanVib
-          path: LeftPanVib.dylib
+          name: LeftPan_Release_Package
+          path: |
+            LeftPanVib.dylib
+            LeftPanWithoutVib.dylib
