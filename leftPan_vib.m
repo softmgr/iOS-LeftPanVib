@@ -102,6 +102,7 @@ static char kWindowHelperKey;
     return nil;
 }
 
+// 核心边界：只接管拥有标准导航栈或模态弹窗的页面
 + (BOOL)canGoBack:(UIViewController *)topVC {
     if (!topVC) return NO;
     UINavigationController *nav = [self findNavControllerFor:topVC];
@@ -114,6 +115,7 @@ static char kWindowHelperKey;
     return NO;
 }
 
+// 核心边界：严禁在游戏引擎渲染视图中触发，防止干扰游戏操作
 + (BOOL)isGameViewController:(UIViewController *)vc {
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
@@ -126,24 +128,31 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// 三层拦截检测：精准判断当前应用是否支持竖屏
+// 三层拦截检测：精准判断当前应用是否支持竖屏 (V20 新增 iPad 专属键值兼容)
 + (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
     // 1. Controller Specific Override
     if (topVC) {
         UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
         if (vcMask != 0 && !(vcMask & UIInterfaceOrientationMaskPortrait) && !(vcMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
-            return NO; // 当前页面锁死了，不支持竖屏
+            return NO; 
         }
     }
     
     // 2. Global Application Mask (Dynamic)
     UIInterfaceOrientationMask appMask = [[UIApplication sharedApplication] supportedInterfaceOrientationsForWindow:window];
     if (appMask != 0 && !(appMask & UIInterfaceOrientationMaskPortrait) && !(appMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
-        return NO; // 应用运行期被禁止了竖屏
+        return NO; 
     }
     
-    // 3. Info.plist Static Check (Fallback)
+    // 3. Info.plist Static Check (Fallback with iPad support)
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
+        if (ipadOrientations) {
+            supportedOrientations = ipadOrientations;
+        }
+    }
+    
     if (supportedOrientations && [supportedOrientations isKindOfClass:[NSArray class]]) {
         BOOL hasPortrait = NO;
         for (NSString *orientation in supportedOrientations) {
@@ -154,7 +163,7 @@ static char kWindowHelperKey;
             }
         }
         if (!hasPortrait) {
-            return NO; // Info.plist 声明了纯横屏
+            return NO; 
         }
     }
     
@@ -167,7 +176,7 @@ static char kWindowHelperKey;
     // Weak self pattern to prevent retain cycles in the dispatch block
     __weak typeof(self) weakSelf = self;
     
-    // 0.1s DELAY: Wait for Bilibili's internal state machine to finish updating its UI,
+    // 0.1s DELAY: Wait for internal state machine to finish updating UI,
     // THEN aggressively force the orientation to Portrait. This prevents state overwrites.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -276,7 +285,6 @@ static char kWindowHelperKey;
         }
         
         if (success) {
-            // 核心修改点：提前检测横屏应用是否支持竖屏
             BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
             
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -284,11 +292,9 @@ static char kWindowHelperKey;
                 [feedback prepare];
                 [feedback impactOccurred];
                 
-                // 如果是横屏且支持竖屏，强行退出全屏（如 B 站）
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
-                    // 如果是竖屏，或者检测到是“纯横屏应用”，则直接进行正常的界面返回操作
                     if (nav && nav.viewControllers.count > 1) {
                         [nav popViewControllerAnimated:YES];
                     } else if (topVC && topVC.presentingViewController) {
@@ -338,6 +344,7 @@ static char kWindowHelperKey;
         return NO;
     }
 
+    // 如果不能进行标准的 iOS 导航返回，则手势直接静默失败，将控制权还给宿主 App
     if (![LeftPanWindowHelper canGoBack:topVC]) {
         return NO;
     }
