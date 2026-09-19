@@ -13,16 +13,11 @@
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Success Thresholds
-// Portrait (Untouched - Perfect State)
-#define kLPVPortraitSuccessTranslationRatio 0.35 
-#define kLPVPortraitSuccessVelocity 120.0        
-#define kLPVPortraitMinFlickTranslation 8.0      
-
-// Landscape
-#define kLPVLandscapeSuccessTranslation 80.0
-#define kLPVLandscapeSuccessVelocity 120.0
-#define kLPVLandscapeMinFlickTranslation 8.0
+// 3. Fallback Success Thresholds (Used only in Landscape / Modal views)
+// Tuned exactly to Apple's internal physics standards for UIGestureRecognizer
+#define kLPVFallbackSuccessTranslation 100.0     
+#define kLPVFallbackSuccessVelocity 300.0        
+#define kLPVFallbackMinFlickTranslation 20.0     
 
 
 static char kWindowHelperKey;
@@ -134,15 +129,21 @@ static char kWindowHelperKey;
 #pragma mark - Device Orientation Control (Delayed Override)
 
 - (void)forcePortraitOrientation {
+    // Weak self pattern to prevent retain cycles in the dispatch block
+    __weak typeof(self) weakSelf = self;
+    
     // 0.1s DELAY: Wait for Bilibili's internal state machine to finish updating its UI,
     // THEN aggressively force the orientation to Portrait. This prevents state overwrites.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
         [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
         
         if (@available(iOS 16.0, *)) {
-            UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
+            UIWindowScene *scene = (UIWindowScene *)strongSelf.window.windowScene;
             if (!scene) {
                 for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
                     if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
@@ -235,7 +236,7 @@ static char kWindowHelperKey;
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            CGFloat requiredTrans = isLandscape ? kLPVLandscapeSuccessTranslation : (screenWidth * 0.5);
+            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * 0.5);
             success = (trans.x > requiredTrans);
         }
         
@@ -309,7 +310,7 @@ static char kWindowHelperKey;
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
-        // Force all other internal gesture recognizers (like Bilibili's scroll/progress) to yield to this pan.
+        // Force all other internal gesture recognizers to yield to this pan.
         return YES;
     }
     return NO;
