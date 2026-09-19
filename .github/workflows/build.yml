@@ -15,6 +15,9 @@ jobs:
       - name: Compile
         run: |
           xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
+            -target arm64-apple-ios14.0 \
+            -miphoneos-version-min=14.0 \
+            -install_name @rpath/leftPan_vib.dylib \
             -framework UIKit -framework Foundation \
             leftPan_vib.m -o leftPan_vib.dylib
           codesign -f -s - leftPan_vib.dylib
