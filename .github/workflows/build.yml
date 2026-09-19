@@ -1,0 +1,26 @@
+name: Build Dylib
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile
+        run: |
+          xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
+            -framework UIKit -framework Foundation \
+            leftPan_vib.m -o leftPan_vib.dylib
+          codesign -f -s - leftPan_vib.dylib
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: leftPan_vib
+          path: leftPan_vib.dylib
