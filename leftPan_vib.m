@@ -5,23 +5,23 @@
 // CONFIGURATION (Constants for easy maintenance)
 // ---------------------------------------------------------
 
-// 1. Trigger Zones (Where the gesture starts)
+// 1. Trigger Zones
 #define kLPVPortraitZoneRatio (2.0 / 3.0)
 #define kLPVLandscapeZoneWidth 45.0
 
-// 2. Intent Thresholds (How fast/horizontal the finger must move to begin)
+// 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Success Thresholds (Perfectly matched with iOS native transition physics)
+// 3. Success Thresholds (Tuned for maximum sensitivity on fast flicks)
 // Portrait
-#define kLPVPortraitSuccessTranslationRatio 0.35 // 35% of screen width for slow drags
-#define kLPVPortraitSuccessVelocity 200.0        // Native-like flick velocity
-#define kLPVPortraitMinFlickTranslation 15.0     // Minimal distance needed if flicking fast
+#define kLPVPortraitSuccessTranslationRatio 0.35 
+#define kLPVPortraitSuccessVelocity 120.0        // Lowered for higher sensitivity
+#define kLPVPortraitMinFlickTranslation 8.0      // Lowered for tiny fast swipes
 
 // Landscape
 #define kLPVLandscapeSuccessTranslation 80.0
-#define kLPVLandscapeSuccessVelocity 200.0
-#define kLPVLandscapeMinFlickTranslation 15.0
+#define kLPVLandscapeSuccessVelocity 120.0
+#define kLPVLandscapeMinFlickTranslation 8.0
 
 
 static char kWindowHelperKey;
@@ -129,18 +129,14 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - Device Orientation Control (Stable Mode)
+#pragma mark - Device Orientation Control
 
 - (void)forcePortraitOrientation {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // 1. Force UIDevice value via KVC
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
-        
-        // 2. Explicitly broadcast the orientation change notification
         [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
         
-        // 3. System-level geometry request for iOS 16+
         if (@available(iOS 16.0, *)) {
             UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
             if (!scene) {
@@ -180,7 +176,6 @@ static char kWindowHelperKey;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        // ONLY hijack native transition in Portrait mode.
         if (nav && !isLandscape) {
             @try {
                 NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
@@ -203,7 +198,6 @@ static char kWindowHelperKey;
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
         
-        // Portrait Predictive Haptic: Using iOS Native 3-Tier Algorithm
         if (pan.state == UIGestureRecognizerStateEnded) {
             CGPoint trans = [pan translationInView:pan.view];
             CGPoint vel = [pan velocityInView:pan.view];
@@ -227,7 +221,6 @@ static char kWindowHelperKey;
             }
         }
     } else {
-        // Fallback execution for Landscape or Modal views
         [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC nav:nav];
     }
 }
@@ -259,12 +252,10 @@ static char kWindowHelperKey;
         
         if (success) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                // 1. Haptic Feedback
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
                 
-                // 2. Perform Back/Dismiss OR Exit Fullscreen
                 if (isLandscape) {
                     [self forcePortraitOrientation];
                 } else {
