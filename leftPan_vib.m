@@ -62,14 +62,14 @@ static char kWindowHelperKey;
         _pan = [[LPVReversePanGesture alloc] initWithTarget:self action:@selector(handlePan:)];
         _pan.delegate = self;
         _pan.cancelsTouchesInView = YES;
-        // DELAY TOUCHES: Crucial for preventing Bilibili's progress bar from stealing the swipe.
+        // DELAY TOUCHES: Crucial for preventing scroll views / progress bars from stealing the swipe.
         _pan.delaysTouchesBegan = YES;
         [window addGestureRecognizer:_pan];
     }
     return self;
 }
 
-#pragma mark - Controller & Game Engine Lookup
+#pragma mark - Controller, Engine & Orientation Lookup
 
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
@@ -124,6 +124,41 @@ static char kWindowHelperKey;
         return YES;
     }
     return NO;
+}
+
+// 三层拦截检测：精准判断当前应用是否支持竖屏
++ (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
+    // 1. Controller Specific Override
+    if (topVC) {
+        UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
+        if (vcMask != 0 && !(vcMask & UIInterfaceOrientationMaskPortrait) && !(vcMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
+            return NO; // 当前页面锁死了，不支持竖屏
+        }
+    }
+    
+    // 2. Global Application Mask (Dynamic)
+    UIInterfaceOrientationMask appMask = [[UIApplication sharedApplication] supportedInterfaceOrientationsForWindow:window];
+    if (appMask != 0 && !(appMask & UIInterfaceOrientationMaskPortrait) && !(appMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
+        return NO; // 应用运行期被禁止了竖屏
+    }
+    
+    // 3. Info.plist Static Check (Fallback)
+    NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
+    if (supportedOrientations && [supportedOrientations isKindOfClass:[NSArray class]]) {
+        BOOL hasPortrait = NO;
+        for (NSString *orientation in supportedOrientations) {
+            if ([orientation isEqualToString:@"UIInterfaceOrientationPortrait"] ||
+                [orientation isEqualToString:@"UIInterfaceOrientationPortraitUpsideDown"]) {
+                hasPortrait = YES;
+                break;
+            }
+        }
+        if (!hasPortrait) {
+            return NO; // Info.plist 声明了纯横屏
+        }
+    }
+    
+    return YES;
 }
 
 #pragma mark - Device Orientation Control (Delayed Override)
@@ -241,14 +276,19 @@ static char kWindowHelperKey;
         }
         
         if (success) {
+            // 核心修改点：提前检测横屏应用是否支持竖屏
+            BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
+            
             dispatch_async(dispatch_get_main_queue(), ^{
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
                 
-                if (isLandscape) {
+                // 如果是横屏且支持竖屏，强行退出全屏（如 B 站）
+                if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
+                    // 如果是竖屏，或者检测到是“纯横屏应用”，则直接进行正常的界面返回操作
                     if (nav && nav.viewControllers.count > 1) {
                         [nav popViewControllerAnimated:YES];
                     } else if (topVC && topVC.presentingViewController) {
