@@ -3,10 +3,42 @@
 
 static char kWindowHelperKey;
 
+#pragma mark - Custom Gesture Recognizer (Coordinate Inversion)
+
+// We subclass UIPanGestureRecognizer to invert the X-axis translation.
+// This tricks the iOS native interactive transition engine into treating a Right-To-Left 
+// swipe as a standard Left-To-Right pop gesture, granting us the 100% native slide animation.
+@interface LPVReversePanGesture : UIPanGestureRecognizer
+- (CGPoint)rawVelocityInView:(UIView *)view;
+@end
+
+@implementation LPVReversePanGesture
+- (CGPoint)rawVelocityInView:(UIView *)view {
+    return [super velocityInView:view];
+}
+
+// Invert X translation: sliding left (negative X) becomes positive X.
+- (CGPoint)translationInView:(UIView *)view {
+    CGPoint t = [super translationInView:view];
+    return CGPointMake(-t.x, t.y);
+}
+
+// Invert X velocity.
+- (CGPoint)velocityInView:(UIView *)view {
+    CGPoint v = [super velocityInView:view];
+    return CGPointMake(-v.x, v.y);
+}
+@end
+
+
+#pragma mark - Main Window Helper
+
 @interface LeftPanWindowHelper : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIWindow *window;
-@property (nonatomic, strong) UIPanGestureRecognizer *pan;
-@property (nonatomic, assign) BOOL hasTriggered;
+@property (nonatomic, strong) LPVReversePanGesture *pan;
+@property (nonatomic, weak) id systemTarget;
+@property (nonatomic, assign) SEL systemAction;
+@property (nonatomic, assign) BOOL useFallbackMode;
 @end
 
 @implementation LeftPanWindowHelper
@@ -15,9 +47,9 @@ static char kWindowHelperKey;
     self = [super init];
     if (self) {
         _window = window;
-        _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+        _pan = [[LPVReversePanGesture alloc] initWithTarget:self action:@selector(handlePan:)];
         _pan.delegate = self;
-        // 关键：触发后立即中断并取消底层 B站自带的滑动评论区/进度条事件
+        // Crucial: Intercept and cancel lower-level app gestures (e.g., Bilibili's scroll views)
         _pan.cancelsTouchesInView = YES;
         _pan.delaysTouchesBegan = NO;
         [window addGestureRecognizer:_pan];
@@ -25,8 +57,9 @@ static char kWindowHelperKey;
     return self;
 }
 
-#pragma mark - 控制器递归查找
+#pragma mark - Controller Lookup
 
+// Recursively find the top-most visible view controller
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -46,6 +79,7 @@ static char kWindowHelperKey;
     return root;
 }
 
+// Find the closest active UINavigationController in the chain
 + (UINavigationController *)findNavControllerFor:(UIViewController *)vc {
     if ([vc isKindOfClass:[UINavigationController class]]) return (UINavigationController *)vc;
     if (vc.navigationController) return vc.navigationController;
@@ -58,6 +92,7 @@ static char kWindowHelperKey;
     return nil;
 }
 
+// Determine if the current page can be popped or dismissed
 + (BOOL)canGoBack:(UIViewController *)topVC {
     if (!topVC) return NO;
     UINavigationController *nav = [self findNavControllerFor:topVC];
@@ -70,55 +105,76 @@ static char kWindowHelperKey;
     return NO;
 }
 
-#pragma mark - 手势与震动处理
+#pragma mark - Gesture Handling
 
-- (void)handlePan:(UIPanGestureRecognizer *)pan {
+- (void)handlePan:(LPVReversePanGesture *)pan {
     if (pan.state == UIGestureRecognizerStateBegan) {
-        self.hasTriggered = NO;
-    } else if (pan.state == UIGestureRecognizerStateChanged) {
-        if (self.hasTriggered) return;
-        CGPoint trans = [pan translationInView:pan.view];
-        // 左滑位移达到 40pt 即瞬间激活返回并震动
-        if (trans.x < -40.0) {
-            self.hasTriggered = YES;
-            [self performBack];
-        }
-    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
-        if (!self.hasTriggered) {
-            CGPoint trans = [pan translationInView:pan.view];
-            CGPoint vel = [pan velocityInView:pan.view];
-            if (trans.x < -25.0 || vel.x < -300.0) {
-                self.hasTriggered = YES;
-                [self performBack];
+        UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+        UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
+        
+        self.systemTarget = nil;
+        self.systemAction = NULL;
+        self.useFallbackMode = YES;
+
+        // Try to hijack the system's native interactive pop transition engine
+        if (nav) {
+            @try {
+                NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
+                if (targets && targets.count > 0) {
+                    id internalTarget = [targets.firstObject valueForKey:@"target"];
+                    SEL internalAction = NSSelectorFromString(@"handleNavigationTransition:");
+                    if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
+                        self.systemTarget = internalTarget;
+                        self.systemAction = internalAction;
+                        self.useFallbackMode = NO; // Hijack successful
+                    }
+                }
+            } @catch (NSException *e) {
+                // Ignore KVC exceptions and safely fallback
             }
         }
-        self.hasTriggered = NO;
     }
-}
 
-- (void)performBack {
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
-    if (!topVC) return;
+    // Forward the inverted pan gesture to the native iOS transition engine.
+    // This provides the exact native feel: scrubs back/forth, respects threshold, bounces back if cancelled.
+    if (!self.useFallbackMode && self.systemTarget) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [self.systemTarget performSelector:self.systemAction withObject:pan];
+        #pragma clang diagnostic pop
+    } else {
+        [self handleFallbackPan:pan];
+    }
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // iOS 自带键盘输入时的清脆弱震感 (Light)
+    // Trigger a light haptic vibration only when the user's finger leaves the screen (gesture ended/cancelled)
+    if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
         UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
         [feedback prepare];
         [feedback impactOccurred];
-
-        UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
-        if (nav && nav.viewControllers.count > 1) {
-            [nav popViewControllerAnimated:YES];
-            return;
-        }
-
-        if (topVC.presentingViewController) {
-            [topVC dismissViewControllerAnimated:YES completion:nil];
-        }
-    });
+    }
 }
 
-#pragma mark - UIGestureRecognizerDelegate (手势排他与冲突解决)
+// Fallback logic for presented ViewControllers without a NavigationController
+- (void)handleFallbackPan:(LPVReversePanGesture *)pan {
+    if (pan.state == UIGestureRecognizerStateEnded) {
+        // Since pan is inverted, a left swipe results in a POSITIVE X translation
+        CGPoint trans = [pan translationInView:pan.view];
+        CGPoint vel = [pan velocityInView:pan.view];
+        
+        // Only dismiss if the user swiped far enough (> 80pt) or fast enough.
+        // If they scrubbed back (trans.x < 80), nothing happens (simulating a snap back).
+        if (trans.x > 80.0 || vel.x > 400.0) {
+            UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+            if (topVC && topVC.presentingViewController) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [topVC dismissViewControllerAnimated:YES completion:nil];
+                });
+            }
+        }
+    }
+}
+
+#pragma mark - UIGestureRecognizerDelegate (Priority & Conflict Resolution)
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
@@ -126,21 +182,22 @@ static char kWindowHelperKey;
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
-    // 1. 触摸起点限制：必须在屏幕中间到右边缘（屏幕宽度的 40% ~ 100%）
+    // 1. Touch origin must be in the right half of the screen (40% ~ 100% of width)
     if (loc.x < screenWidth * 0.40) {
         return NO;
     }
 
-    // 2. 意图判断：必须是向左划动（X轴负向速度），且水平意图明显大于垂直滑动（防止看视频上下翻评论误触）
-    CGPoint vel = [self.pan velocityInView:self.pan.view];
-    if (vel.x >= -40) {
+    // 2. Intent must be a Left Swipe.
+    // We use rawVelocity (before inversion) to accurately determine physical finger direction.
+    CGPoint rawVel = [self.pan rawVelocityInView:self.pan.view];
+    if (rawVel.x >= -40) { // Must be moving left (negative X)
         return NO;
     }
-    if (fabs(vel.x) <= fabs(vel.y) * 1.3) {
+    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) { // Must be primarily horizontal
         return NO;
     }
 
-    // 3. 页面判断：如果当前就在主页/根页面（无法再返回），不拦截，放行应用自带功能
+    // 3. Prevent triggering if the user is already on the root page
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     if (![LeftPanWindowHelper canGoBack:topVC]) {
         return NO;
@@ -151,24 +208,24 @@ static char kWindowHelperKey;
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (gestureRecognizer == self.pan) {
-        // 放行系统自带的从屏幕最左边缘右滑返回手势
+        // Do not block the system's native left-edge pan gesture
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
-        // 核心：强制 B站内所有自带手势（横向滚评论区、播放器内滑动）等待并让位给此返回手势
+        // Core Logic: Force all app-specific scroll views (like Bilibili comments) to wait and yield
         return YES;
     }
     return NO;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    // 互斥响应，防止在返回的同时还在背景里滚评论
+    // Strictly prevent simultaneous gesture recognition to ensure clean interception
     return NO;
 }
 
 @end
 
-#pragma mark - 全局窗口注入与监听
+#pragma mark - Global Window Injection
 
 static void attachHelperToWindow(UIWindow *window) {
     if (!window || ![window isKindOfClass:[UIWindow class]]) return;
@@ -185,7 +242,7 @@ static void swiz_UIWindow_makeKeyAndVisible(UIWindow *self, SEL _cmd) {
 }
 
 __attribute__((constructor)) static void init_leftPanGlobal(void) {
-    // 监听全局 KeyWindow 切换通知
+    // Listen for KeyWindow changes to attach our gesture globally
     [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
@@ -195,7 +252,7 @@ __attribute__((constructor)) static void init_leftPanGlobal(void) {
         }
     }];
 
-    // Hook UIWindow makeKeyAndVisible
+    // Swizzle makeKeyAndVisible for early injection
     Class winClass = [UIWindow class];
     Method m = class_getInstanceMethod(winClass, @selector(makeKeyAndVisible));
     if (m) {
