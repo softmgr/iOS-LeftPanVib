@@ -1,43 +1,44 @@
-name: Build LeftPanVib Release
+name: Build Dylib
 
 on:
   push:
-    paths:
-      - 'leftPan_vib.m'
-      - '.github/workflows/**'
+    branches: [ "**" ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest
-    
+    runs-on: macos-14
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Build Standard Version (LeftPanVib.dylib)
-      run: |
-        clang -dynamiclib -fobjc-arc -Os -fvisibility=hidden \
-        -Wl,-x -Wl,-S \
-        -target arm64-apple-ios14.0 \
-        -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-        -framework Foundation -framework UIKit \
-        -o LeftPanVib.dylib leftPan_vib.m
+      - name: Compile 1 - With Vibration (LeftPanVib.dylib)
+        run: |
+          xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
+            -Os -fvisibility=hidden -Wl,-x -Wl,-S \
+            -target arm64-apple-ios14.0 \
+            -miphoneos-version-min=14.0 \
+            -install_name @rpath/LeftPanVib.dylib \
+            -framework UIKit -framework Foundation \
+            leftPan_vib.m -o LeftPanVib.dylib
+          codesign -f -s - LeftPanVib.dylib
 
-    - name: Build Silent Version (LeftPanWithoutVib.dylib)
-      run: |
-        clang -dynamiclib -fobjc-arc -Os -fvisibility=hidden \
-        -Wl,-x -Wl,-S \
-        -DDISABLE_VIBRATION \
-        -target arm64-apple-ios14.0 \
-        -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-        -framework Foundation -framework UIKit \
-        -o LeftPanWithoutVib.dylib leftPan_vib.m
+      - name: Compile 2 - Without Vibration (LeftPanWithoutVib.dylib)
+        run: |
+          xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
+            -Os -fvisibility=hidden -Wl,-x -Wl,-S \
+            -target arm64-apple-ios14.0 \
+            -miphoneos-version-min=14.0 \
+            -DDISABLE_VIBRATION \
+            -install_name @rpath/LeftPanWithoutVib.dylib \
+            -framework UIKit -framework Foundation \
+            leftPan_vib.m -o LeftPanWithoutVib.dylib
+          codesign -f -s - LeftPanWithoutVib.dylib
 
-    - name: Upload Release Package
-      uses: actions/upload-artifact@v4
-      with:
-        name: LeftPan_Release_Package
-        path: |
-          LeftPanVib.dylib
-          LeftPanWithoutVib.dylib
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LeftPan_Release_Package
+          path: |
+            LeftPanVib.dylib
+            LeftPanWithoutVib.dylib
