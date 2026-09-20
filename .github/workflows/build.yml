@@ -34,13 +34,10 @@ jobs:
         -framework Foundation -framework UIKit \
         -o LeftPanWithoutVib.dylib leftPan_vib.m
 
-    - name: Package Artifacts
-      run: |
-        zip LeftPan_Release_Package.zip LeftPanVib.dylib LeftPanWithoutVib.dylib
-
     - name: Upload Release Package
       uses: actions/upload-artifact@v4
       with:
         name: LeftPan_Release_Package
-        path: LeftPan_Release_Package.zip
-        retention-days: 90
+        path: |
+          LeftPanVib.dylib
+          LeftPanWithoutVib.dylib
