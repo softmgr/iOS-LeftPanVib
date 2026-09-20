@@ -22,6 +22,19 @@
 
 static char kWindowHelperKey;
 
+#pragma mark - Special App Whitelist
+
+// V23 NEW: Whitelist mechanism for highly customized apps
+static BOOL isSpecialApp_Huya(void) {
+    static BOOL isHuya = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        isHuya = [bundleID isEqualToString:@"com.yy.kiwi"];
+    });
+    return isHuya;
+}
+
 #pragma mark - Custom Gesture Recognizer (Coordinate Inversion)
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
@@ -32,22 +45,13 @@ static char kWindowHelperKey;
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
-// Flip the translation distance to simulate left-to-right swipe
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
-// Flip the velocity direction
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
-}
-// V22 NEW: Mirror the absolute touch location. 
-// Crucial for custom transition engines (like Huya) that calculate progress via location.x / width.
-- (CGPoint)locationInView:(UIView *)view {
-    CGPoint loc = [super locationInView:view];
-    CGFloat width = view ? view.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-    return CGPointMake(width - loc.x, loc.y);
 }
 @end
 
@@ -111,14 +115,13 @@ static char kWindowHelperKey;
     return nil;
 }
 
-// Core Boundary: V22 updated to grant universal exemption for Landscape mode
-+ (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
-    // In landscape mode, edge swipes are predominantly intended to exit fullscreen video.
-    // Bypassing strict nav stack checks allows custom video players (like Huya) to exit normally.
-    if (isLandscape) {
-        return YES; 
+// Core Boundary: Only intercept pages with a standard navigation stack or modal presentation
++ (BOOL)canGoBack:(UIViewController *)topVC {
+    // V23 NEW: Whitelist override. Bypass strict navigation stack checks for apps with custom architectures.
+    if (isSpecialApp_Huya()) {
+        return YES;
     }
-    
+
     if (!topVC) return NO;
     UINavigationController *nav = [self findNavControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) {
@@ -130,13 +133,18 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// Core Boundary: Strictly prohibit triggering in game engine views. 
-// V22: Removed EAGL/MTKView to prevent blocking OpenGL/Metal-based video players.
+// Core Boundary: Strictly prohibit triggering in game engine views to prevent interference with gameplay
 + (BOOL)isGameViewController:(UIViewController *)vc {
+    // V23 NEW: Whitelist override. Huya uses Metal/OpenGL for video rendering, exempt it from game engine block.
+    if (isSpecialApp_Huya()) {
+        return NO;
+    }
+
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
     if ([viewClassStr containsString:@"Unity"] || 
-        [viewClassStr containsString:@"Cocos"] || 
+        [viewClassStr containsString:@"EAGL"] || 
+        [viewClassStr containsString:@"MTKView"] ||
         [viewClassStr containsString:@"FMetalView"]) {
         return YES;
     }
@@ -233,18 +241,24 @@ static char kWindowHelperKey;
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            @try {
-                NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
-                if (targets && targets.count > 0) {
-                    id internalTarget = [targets.firstObject valueForKey:@"target"];
-                    SEL internalAction = NSSelectorFromString(@"handleNavigationTransition:");
-                    if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
-                        self.systemTarget = internalTarget;
-                        self.systemAction = internalAction;
-                        self.useFallbackMode = NO; 
+            // V23 NEW: For Huya, force useFallbackMode = YES to avoid the black screen 
+            // caused by its flawed custom interactive transition engine.
+            if (isSpecialApp_Huya()) {
+                self.useFallbackMode = YES;
+            } else {
+                @try {
+                    NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
+                    if (targets && targets.count > 0) {
+                        id internalTarget = [targets.firstObject valueForKey:@"target"];
+                        SEL internalAction = NSSelectorFromString(@"handleNavigationTransition:");
+                        if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
+                            self.systemTarget = internalTarget;
+                            self.systemAction = internalAction;
+                            self.useFallbackMode = NO; 
+                        }
                     }
-                }
-            } @catch (NSException *e) { }
+                } @catch (NSException *e) { }
+            }
         }
     }
 
@@ -357,8 +371,7 @@ static char kWindowHelperKey;
         return NO;
     }
 
-    // V22: Pass isLandscape to allow bypassing nav stack checks in fullscreen videos
-    if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
+    if (![LeftPanWindowHelper canGoBack:topVC]) {
         return NO;
     }
 
