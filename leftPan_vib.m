@@ -102,7 +102,7 @@ static char kWindowHelperKey;
     return nil;
 }
 
-// 核心边界：只接管拥有标准导航栈或模态弹窗的页面
+// Core Boundary: Only intercept pages with a standard navigation stack or modal presentation
 + (BOOL)canGoBack:(UIViewController *)topVC {
     if (!topVC) return NO;
     UINavigationController *nav = [self findNavControllerFor:topVC];
@@ -115,7 +115,7 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// 核心边界：严禁在游戏引擎渲染视图中触发，防止干扰游戏操作
+// Core Boundary: Strictly prohibit triggering in game engine views to prevent interference with gameplay
 + (BOOL)isGameViewController:(UIViewController *)vc {
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
@@ -128,7 +128,7 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// 三层拦截检测：精准判断当前应用是否支持竖屏
+// 3-Layer Interception Check: Accurately determine if the current app supports portrait orientation
 + (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
     if (topVC) {
         UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
@@ -246,7 +246,7 @@ static char kWindowHelperKey;
                     if (@available(iOS 10.0, *)) {
                         [coordinator notifyWhenInteractionEndsUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
-// 宏定义：如果未定义 DISABLE_VIBRATION，则编译这部分震动代码
+// Macro definition: Compile this haptic feedback code only if DISABLE_VIBRATION is not defined
 #ifndef DISABLE_VIBRATION
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
@@ -283,7 +283,7 @@ static char kWindowHelperKey;
             BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
             
             dispatch_async(dispatch_get_main_queue(), ^{
-// 宏定义：如果未定义 DISABLE_VIBRATION，则编译这部分震动代码
+// Macro definition: Compile this haptic feedback code only if DISABLE_VIBRATION is not defined
 #ifndef DISABLE_VIBRATION
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
