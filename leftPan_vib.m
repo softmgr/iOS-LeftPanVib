@@ -8,13 +8,14 @@
 // 1. Trigger Zones
 #define kLPVPortraitZoneRatio (2.0 / 3.0)        // Default: Active in rightmost 1/3
 #define kLPVHuyaPortraitZoneRatio (3.0 / 4.0)    // Huya specific: Active in rightmost 1/4
+#define kLPVLandscapeZoneWidth 60.0              // RESTORED: Active in extreme right edge for landscape
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
 // 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
 #define kLPVPortraitSuccessTranslationRatio 0.35     // Default: 35% screen width for slow drags
-#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 // V25 NEW: Huya specific: 20% screen width for short drags
+#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 // Huya specific: 20% screen width for short drags
 #define kLPVFallbackSuccessTranslation 100.0         // Absolute points for landscape slow drags
 #define kLPVFallbackSuccessVelocity 300.0            // Flick velocity threshold
 #define kLPVFallbackMinFlickTranslation 20.0         // Anti-jitter minimum distance
@@ -115,7 +116,7 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Core Boundary: V25 Updated. Only bypass stack check for Landscape mode. Portrait relies on strict checks.
+// Core Boundary: Only bypass stack check for Landscape mode. Portrait relies on strict checks.
 + (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
     // In landscape mode, edge swipes are universally intended to exit fullscreen video.
     // Bypassing strict nav stack checks allows custom video players to exit normally.
@@ -167,7 +168,8 @@ static BOOL isSpecialApp_Huya(void) {
     }
     
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+    // FIX WARNING: Replaced UI_USER_INTERFACE_IDIOM() with modern API
+    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
         NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
         if (ipadOrientations) {
             supportedOrientations = ipadOrientations;
@@ -230,11 +232,16 @@ static BOOL isSpecialApp_Huya(void) {
     
     UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
+    
+    // FIX WARNING: Suppress the deprecation warning for the fallback statusBarOrientation
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
         isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
     } else {
         isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
+#pragma clang diagnostic pop
     
     if (pan.state == UIGestureRecognizerStateBegan) {
         self.systemTarget = nil;
@@ -273,8 +280,9 @@ static BOOL isSpecialApp_Huya(void) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator ?: nav.transitionCoordinator;
                 if (coordinator && [coordinator initiallyInteractive]) {
+                    // FIX WARNING: Replaced notifyWhenInteractionEndsUsingBlock: with notifyWhenInteractionChangesUsingBlock:
                     if (@available(iOS 10.0, *)) {
-                        [coordinator notifyWhenInteractionEndsUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+                        [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
 // Macro definition: Compile this haptic feedback code only if DISABLE_VIBRATION is not defined
 #ifndef DISABLE_VIBRATION
@@ -305,7 +313,7 @@ static BOOL isSpecialApp_Huya(void) {
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            // V25 FIX: Apply the specialized smaller translation ratio for Huya
+            // Apply the specialized smaller translation ratio for Huya
             CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitSuccessTranslationRatio : kLPVPortraitSuccessTranslationRatio;
             CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * ratio);
             success = (trans.x > requiredTrans);
@@ -343,11 +351,15 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIWindow *window = self.pan.view.window ?: self.window;
     BOOL isLandscape = NO;
+    
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
         isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
     } else {
         isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
+#pragma clang diagnostic pop
 
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
@@ -376,7 +388,7 @@ static BOOL isSpecialApp_Huya(void) {
         return NO;
     }
 
-    // V25 FIX: Pass isLandscape parameter. Prevents home screen misfires while keeping landscape robust.
+    // Pass isLandscape parameter. Prevents home screen misfires while keeping landscape robust.
     if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
         return NO;
     }
