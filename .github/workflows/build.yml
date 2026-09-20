@@ -14,26 +14,24 @@ jobs:
 
       - name: Compile 1 - With Vibration (LeftPanVib.dylib)
         run: |
-          xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
-            -Os -fvisibility=hidden -Wl,-x -Wl,-S \
+          xcrun -sdk iphoneos clang -arch arm64 -dynamiclib -fobjc-arc \
+            -Os -fvisibility=hidden -Wl,-x -Wl,-S -Wl,-dead_strip \
             -target arm64-apple-ios14.0 \
             -miphoneos-version-min=14.0 \
             -install_name @rpath/LeftPanVib.dylib \
             -framework UIKit -framework Foundation \
             leftPan_vib.m -o LeftPanVib.dylib
-          codesign -f -s - LeftPanVib.dylib
 
       - name: Compile 2 - Without Vibration (LeftPanWithoutVib.dylib)
         run: |
-          xcrun -sdk iphoneos clang -arch arm64 -shared -fobjc-arc \
-            -Os -fvisibility=hidden -Wl,-x -Wl,-S \
+          xcrun -sdk iphoneos clang -arch arm64 -dynamiclib -fobjc-arc \
+            -Os -fvisibility=hidden -Wl,-x -Wl,-S -Wl,-dead_strip \
             -target arm64-apple-ios14.0 \
             -miphoneos-version-min=14.0 \
             -DDISABLE_VIBRATION \
             -install_name @rpath/LeftPanWithoutVib.dylib \
             -framework UIKit -framework Foundation \
             leftPan_vib.m -o LeftPanWithoutVib.dylib
-          codesign -f -s - LeftPanWithoutVib.dylib
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
