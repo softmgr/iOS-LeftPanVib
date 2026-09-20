@@ -7,17 +7,17 @@
 
 // 1. Trigger Zones
 #define kLPVPortraitZoneRatio (2.0 / 3.0)        // Default: Active in rightmost 1/3
-#define kLPVHuyaPortraitZoneRatio (3.0 / 4.0)    // V24 NEW: Huya specific: Active in rightmost 1/4 to prevent mis-touches
-#define kLPVLandscapeZoneWidth 60.0              // Active in extreme right edge for landscape
+#define kLPVHuyaPortraitZoneRatio (3.0 / 4.0)    // Huya specific: Active in rightmost 1/4
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
 // 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
-#define kLPVPortraitSuccessTranslationRatio 0.35 // 35% screen width for slow drags
-#define kLPVFallbackSuccessTranslation 100.0     // Absolute points for landscape slow drags
-#define kLPVFallbackSuccessVelocity 300.0        // Flick velocity threshold
-#define kLPVFallbackMinFlickTranslation 20.0     // Anti-jitter minimum distance
+#define kLPVPortraitSuccessTranslationRatio 0.35     // Default: 35% screen width for slow drags
+#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 // V25 NEW: Huya specific: 20% screen width for short drags
+#define kLPVFallbackSuccessTranslation 100.0         // Absolute points for landscape slow drags
+#define kLPVFallbackSuccessVelocity 300.0            // Flick velocity threshold
+#define kLPVFallbackMinFlickTranslation 20.0         // Anti-jitter minimum distance
 
 
 static char kWindowHelperKey;
@@ -115,10 +115,11 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Core Boundary: Only intercept pages with a standard navigation stack or modal presentation
-+ (BOOL)canGoBack:(UIViewController *)topVC {
-    // Whitelist override. Bypass strict navigation stack checks for apps with custom architectures.
-    if (isSpecialApp_Huya()) {
+// Core Boundary: V25 Updated. Only bypass stack check for Landscape mode. Portrait relies on strict checks.
++ (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
+    // In landscape mode, edge swipes are universally intended to exit fullscreen video.
+    // Bypassing strict nav stack checks allows custom video players to exit normally.
+    if (isLandscape) {
         return YES;
     }
 
@@ -304,8 +305,9 @@ static BOOL isSpecialApp_Huya(void) {
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            // V24 FIX: Use the defined translation ratio (0.35) instead of hardcoded 0.5
-            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * kLPVPortraitSuccessTranslationRatio);
+            // V25 FIX: Apply the specialized smaller translation ratio for Huya
+            CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitSuccessTranslationRatio : kLPVPortraitSuccessTranslationRatio;
+            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * ratio);
             success = (trans.x > requiredTrans);
         }
         
@@ -359,7 +361,7 @@ static BOOL isSpecialApp_Huya(void) {
             return NO;
         }
     } else {
-        // V24 NEW: Use custom zone ratio (1/4) for Huya to prevent UI conflicts
+        // Use custom zone ratio (1/4) for Huya to prevent UI conflicts, otherwise use default (1/3)
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) {
             return NO;
@@ -374,7 +376,8 @@ static BOOL isSpecialApp_Huya(void) {
         return NO;
     }
 
-    if (![LeftPanWindowHelper canGoBack:topVC]) {
+    // V25 FIX: Pass isLandscape parameter. Prevents home screen misfires while keeping landscape robust.
+    if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
         return NO;
     }
 
