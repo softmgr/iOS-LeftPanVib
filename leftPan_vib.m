@@ -6,25 +6,25 @@
 // ---------------------------------------------------------
 
 // 1. Trigger Zones
-#define kLPVPortraitZoneRatio (2.0 / 3.0)
-// WIDENED: 60 points covers a full thumb width to easily catch edge swipes in landscape.
-#define kLPVLandscapeZoneWidth 60.0
+#define kLPVPortraitZoneRatio (2.0 / 3.0)        // Default: Active in rightmost 1/3
+#define kLPVHuyaPortraitZoneRatio (3.0 / 4.0)    // V24 NEW: Huya specific: Active in rightmost 1/4 to prevent mis-touches
+#define kLPVLandscapeZoneWidth 60.0              // Active in extreme right edge for landscape
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
-// 3. Fallback Success Thresholds (Used only in Landscape / Modal views)
-// Tuned exactly to Apple's internal physics standards for UIGestureRecognizer
-#define kLPVFallbackSuccessTranslation 100.0     
-#define kLPVFallbackSuccessVelocity 300.0        
-#define kLPVFallbackMinFlickTranslation 20.0     
+// 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
+#define kLPVPortraitSuccessTranslationRatio 0.35 // 35% screen width for slow drags
+#define kLPVFallbackSuccessTranslation 100.0     // Absolute points for landscape slow drags
+#define kLPVFallbackSuccessVelocity 300.0        // Flick velocity threshold
+#define kLPVFallbackMinFlickTranslation 20.0     // Anti-jitter minimum distance
 
 
 static char kWindowHelperKey;
 
 #pragma mark - Special App Whitelist
 
-// V23 NEW: Whitelist mechanism for highly customized apps
+// Whitelist mechanism for highly customized apps
 static BOOL isSpecialApp_Huya(void) {
     static BOOL isHuya = NO;
     static dispatch_once_t onceToken;
@@ -117,7 +117,7 @@ static BOOL isSpecialApp_Huya(void) {
 
 // Core Boundary: Only intercept pages with a standard navigation stack or modal presentation
 + (BOOL)canGoBack:(UIViewController *)topVC {
-    // V23 NEW: Whitelist override. Bypass strict navigation stack checks for apps with custom architectures.
+    // Whitelist override. Bypass strict navigation stack checks for apps with custom architectures.
     if (isSpecialApp_Huya()) {
         return YES;
     }
@@ -135,7 +135,7 @@ static BOOL isSpecialApp_Huya(void) {
 
 // Core Boundary: Strictly prohibit triggering in game engine views to prevent interference with gameplay
 + (BOOL)isGameViewController:(UIViewController *)vc {
-    // V23 NEW: Whitelist override. Huya uses Metal/OpenGL for video rendering, exempt it from game engine block.
+    // Whitelist override. Huya uses Metal/OpenGL for video rendering, exempt it from game engine block.
     if (isSpecialApp_Huya()) {
         return NO;
     }
@@ -241,7 +241,7 @@ static BOOL isSpecialApp_Huya(void) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // V23 NEW: For Huya, force useFallbackMode = YES to avoid the black screen 
+            // For Huya, force useFallbackMode = YES to avoid the black screen 
             // caused by its flawed custom interactive transition engine.
             if (isSpecialApp_Huya()) {
                 self.useFallbackMode = YES;
@@ -304,7 +304,8 @@ static BOOL isSpecialApp_Huya(void) {
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * 0.5);
+            // V24 FIX: Use the defined translation ratio (0.35) instead of hardcoded 0.5
+            CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * kLPVPortraitSuccessTranslationRatio);
             success = (trans.x > requiredTrans);
         }
         
@@ -358,7 +359,9 @@ static BOOL isSpecialApp_Huya(void) {
             return NO;
         }
     } else {
-        if (loc.x < screenWidth * kLPVPortraitZoneRatio) {
+        // V24 NEW: Use custom zone ratio (1/4) for Huya to prevent UI conflicts
+        CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
+        if (loc.x < screenWidth * ratio) {
             return NO;
         }
     }
