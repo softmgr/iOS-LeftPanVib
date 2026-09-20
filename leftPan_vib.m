@@ -6,9 +6,9 @@
 // ---------------------------------------------------------
 
 // 1. Trigger Zones
-#define kLPVPortraitZoneRatio (2.0 / 3.0)        // Default: Active in rightmost 1/3
-#define kLPVHuyaPortraitZoneRatio (3.0 / 4.0)    // Huya specific: Active in rightmost 1/4
-#define kLPVLandscapeZoneWidth 60.0              // RESTORED: Active in extreme right edge for landscape
+#define kLPVPortraitZoneRatio (4.0 / 5.0)        // V27 UPDATED: Default: Active in rightmost 1/5 (20%)
+#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    // V27 UPDATED: Huya specific: Active in rightmost 1/5
+#define kLPVLandscapeZoneWidth 50.0              // V27 UPDATED: Active in extreme right edge for landscape (reduced)
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
@@ -168,7 +168,7 @@ static BOOL isSpecialApp_Huya(void) {
     }
     
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
-    // FIX WARNING: Replaced UI_USER_INTERFACE_IDIOM() with modern API
+    // Replaced UI_USER_INTERFACE_IDIOM() with modern API
     if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
         NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
         if (ipadOrientations) {
@@ -233,7 +233,7 @@ static BOOL isSpecialApp_Huya(void) {
     UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
     
-    // FIX WARNING: Suppress the deprecation warning for the fallback statusBarOrientation
+    // Suppress the deprecation warning for the fallback statusBarOrientation
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
@@ -280,7 +280,7 @@ static BOOL isSpecialApp_Huya(void) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator ?: nav.transitionCoordinator;
                 if (coordinator && [coordinator initiallyInteractive]) {
-                    // FIX WARNING: Replaced notifyWhenInteractionEndsUsingBlock: with notifyWhenInteractionChangesUsingBlock:
+                    // Replaced notifyWhenInteractionEndsUsingBlock: with notifyWhenInteractionChangesUsingBlock:
                     if (@available(iOS 10.0, *)) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
@@ -373,7 +373,7 @@ static BOOL isSpecialApp_Huya(void) {
             return NO;
         }
     } else {
-        // Use custom zone ratio (1/4) for Huya to prevent UI conflicts, otherwise use default (1/3)
+        // Use custom zone ratio for Huya, otherwise use default
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) {
             return NO;
