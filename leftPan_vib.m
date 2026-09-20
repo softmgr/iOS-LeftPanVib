@@ -32,13 +32,22 @@ static char kWindowHelperKey;
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
+// Flip the translation distance to simulate left-to-right swipe
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
+// Flip the velocity direction
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
+}
+// V22 NEW: Mirror the absolute touch location. 
+// Crucial for custom transition engines (like Huya) that calculate progress via location.x / width.
+- (CGPoint)locationInView:(UIView *)view {
+    CGPoint loc = [super locationInView:view];
+    CGFloat width = view ? view.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
+    return CGPointMake(width - loc.x, loc.y);
 }
 @end
 
@@ -102,8 +111,14 @@ static char kWindowHelperKey;
     return nil;
 }
 
-// Core Boundary: Only intercept pages with a standard navigation stack or modal presentation
-+ (BOOL)canGoBack:(UIViewController *)topVC {
+// Core Boundary: V22 updated to grant universal exemption for Landscape mode
++ (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
+    // In landscape mode, edge swipes are predominantly intended to exit fullscreen video.
+    // Bypassing strict nav stack checks allows custom video players (like Huya) to exit normally.
+    if (isLandscape) {
+        return YES; 
+    }
+    
     if (!topVC) return NO;
     UINavigationController *nav = [self findNavControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) {
@@ -115,13 +130,13 @@ static char kWindowHelperKey;
     return NO;
 }
 
-// Core Boundary: Strictly prohibit triggering in game engine views to prevent interference with gameplay
+// Core Boundary: Strictly prohibit triggering in game engine views. 
+// V22: Removed EAGL/MTKView to prevent blocking OpenGL/Metal-based video players.
 + (BOOL)isGameViewController:(UIViewController *)vc {
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
     if ([viewClassStr containsString:@"Unity"] || 
-        [viewClassStr containsString:@"EAGL"] || 
-        [viewClassStr containsString:@"MTKView"] ||
+        [viewClassStr containsString:@"Cocos"] || 
         [viewClassStr containsString:@"FMetalView"]) {
         return YES;
     }
@@ -342,7 +357,8 @@ static char kWindowHelperKey;
         return NO;
     }
 
-    if (![LeftPanWindowHelper canGoBack:topVC]) {
+    // V22: Pass isLandscape to allow bypassing nav stack checks in fullscreen videos
+    if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
         return NO;
     }
 
