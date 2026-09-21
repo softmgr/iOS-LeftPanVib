@@ -124,26 +124,76 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Custom UI State Heuristic: Accurately identifies Mini Programs & Games without fragile class name matching
-+ (BOOL)isCustomUIContainer:(UIViewController *)vc {
-    if (!vc) return NO;
+// Visual Heuristic: Scan view hierarchy for a visibly active capsule / option menu
++ (BOOL)isCapsuleVisibleInView:(UIView *)view depth:(NSInteger)depth {
+    if (!view || depth > 12) return NO;
     
-    // 1. WeChat Mini Program Check
-    if ([NSStringFromClass([vc class]) containsString:@"WAWebView"]) {
-        return YES;
+    // Skip hidden or tiny views to avoid false positives from cached/inactive components
+    if (view.hidden || view.alpha < 0.05 || view.bounds.size.width < 10 || view.bounds.size.height < 10) {
+        return NO;
     }
     
-    // 2. Alipay Navigation State Check
-    // Alipay Mini Programs and Games replace the native navigation bar with a custom capsule ("..." & "X").
-    // We disable the gesture when the native navigation bar is hidden to avoid transition crashes.
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    if ([bundleID isEqualToString:@"com.alipay.iphoneclient"]) {
-        UINavigationController *nav = vc.navigationController;
-        if (nav) {
-            if (nav.navigationBarHidden || nav.navigationBar.isHidden || nav.navigationBar.alpha < 0.01) {
-                return YES;
+    NSString *className = NSStringFromClass([view class]);
+    
+    // Look for typical floating menu class names used by Alipay and WeChat
+    if ([className containsString:@"Capsule"] || 
+        [className containsString:@"capsule"] || 
+        [className containsString:@"OptionMenu"] || 
+        [className containsString:@"FloatMenu"]) {
+        
+        UIWindow *window = view.window;
+        if (window) {
+            CGRect absFrame = [view convertRect:view.bounds toView:window];
+            CGRect screenBounds = window.bounds;
+            
+            // Capsules are positioned at the top of the screen (y < half screen height)
+            if (absFrame.origin.y < screenBounds.size.height / 2.0) {
+                if (CGRectIntersectsRect(screenBounds, absFrame)) {
+                    return YES;
+                }
             }
         }
+    }
+    
+    for (UIView *subview in view.subviews) {
+        if ([self isCapsuleVisibleInView:subview depth:depth + 1]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// Dual-State Isolation: Accurately identifies Mini Program Games by confirming TWO conditions:
+// 1. The native UINavigationBar is missing or hidden (indicating a full-screen mode).
+// 2. The iconic floating capsule button ("..." & "X") is visibly present on screen.
++ (BOOL)isMiniProgramGameActive:(UIViewController *)topVC window:(UIWindow *)window {
+    // Condition 1: Check native navigation bar state
+    if (topVC.navigationController) {
+        UINavigationBar *navBar = topVC.navigationController.navigationBar;
+        // If a standard native navigation bar is visibly present, it's a normal page, NOT a mini game.
+        if (!navBar.isHidden && navBar.alpha > 0.05 && navBar.bounds.size.height > 10) {
+            return NO;
+        }
+    }
+    
+    // Condition 2: Scan for the floating capsule UI
+    return [self isCapsuleVisibleInView:window depth:0];
+}
+
+// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
++ (BOOL)isGameViewController:(UIViewController *)vc {
+    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
+    if (isSpecialApp_Huya()) {
+        return NO;
+    }
+
+    if (!vc || !vc.view) return NO;
+    NSString *viewClassStr = NSStringFromClass([vc.view class]);
+    if ([viewClassStr containsString:@"Unity"] || 
+        [viewClassStr containsString:@"EAGL"] || 
+        [viewClassStr containsString:@"MTKView"] ||
+        [viewClassStr containsString:@"FMetalView"]) {
+        return YES;
     }
     return NO;
 }
@@ -161,24 +211,6 @@ static BOOL isSpecialApp_Huya(void) {
         return YES;
     }
     if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) {
-        return YES;
-    }
-    return NO;
-}
-
-// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
-+ (BOOL)isGameViewController:(UIViewController *)vc {
-    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
-    if (isSpecialApp_Huya()) {
-        return NO;
-    }
-
-    if (!vc || !vc.view) return NO;
-    NSString *viewClassStr = NSStringFromClass([vc.view class]);
-    if ([viewClassStr containsString:@"Unity"] || 
-        [viewClassStr containsString:@"EAGL"] || 
-        [viewClassStr containsString:@"MTKView"] ||
-        [viewClassStr containsString:@"FMetalView"]) {
         return YES;
     }
     return NO;
@@ -389,14 +421,8 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Global Interception 1: Disable gesture entirely inside highly custom containers (Alipay Mini Games)
-    if ([LeftPanWindowHelper isCustomUIContainer:topVC]) {
-        return NO;
-    }
-
-    // Global Interception 2: Disable gesture entirely inside rendering game engines
-    // Note: Upgraded to apply indiscriminately to both Portrait and Landscape orientations
-    if ([LeftPanWindowHelper isGameViewController:topVC]) {
+    // Global Interception: Block Mini Program Games (e.g., Alipay games) that run full-screen with a floating capsule
+    if ([LeftPanWindowHelper isMiniProgramGameActive:topVC window:window]) {
         return NO;
     }
 
@@ -404,6 +430,10 @@ static BOOL isSpecialApp_Huya(void) {
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
+        // Intercept native 3D/GL Game rendering engines in landscape mode
+        if ([LeftPanWindowHelper isGameViewController:topVC]) {
+            return NO;
+        }
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
         }
