@@ -6,19 +6,27 @@
 // ---------------------------------------------------------
 
 // 1. Trigger Zones
-#define kLPVPortraitZoneRatio (4.0 / 5.0)            // Default: Active in rightmost 1/5 (20%)
-#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)        // Huya specific: Active in rightmost 1/5 (20%)
-#define kLPVLandscapeZoneWidth 50.0                  // Active in extreme right edge for landscape
+// Default: Active in rightmost 1/5 (20%)
+#define kLPVPortraitZoneRatio (4.0 / 5.0)        
+// Huya specific: Active in rightmost 1/5
+#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
+// Active in extreme right edge for landscape
+#define kLPVLandscapeZoneWidth 50.0              
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
 // 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
-#define kLPVPortraitSuccessTranslationRatio 0.35     // Default: 35% screen width for slow drags
-#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 // Huya specific: 20% screen width for short drags
-#define kLPVFallbackSuccessTranslation 100.0         // Absolute points for landscape slow drags
-#define kLPVFallbackSuccessVelocity 300.0            // Flick velocity threshold
-#define kLPVFallbackMinFlickTranslation 20.0         // Anti-jitter minimum distance
+// Default: 35% screen width for slow drags
+#define kLPVPortraitSuccessTranslationRatio 0.35     
+// Huya specific: 20% screen width for short drags
+#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
+// Absolute points for landscape slow drags
+#define kLPVFallbackSuccessTranslation 100.0         
+// Flick velocity threshold
+#define kLPVFallbackSuccessVelocity 300.0            
+// Anti-jitter minimum distance
+#define kLPVFallbackMinFlickTranslation 20.0         
 
 
 static char kWindowHelperKey;
@@ -116,43 +124,22 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Core Boundary: Prohibit triggering in Mini Program or Super App Web containers 
-// to avoid interfering with internal web history or specialized game engines.
+// Core Boundary: Prohibit triggering in Mini Program or Game containers
 + (BOOL)isMiniProgramViewController:(UIViewController *)vc {
     if (!vc) return NO;
     NSString *vcClassStr = NSStringFromClass([vc class]);
     NSString *navClassStr = vc.navigationController ? NSStringFromClass([vc.navigationController class]) : @"";
     
-    // 1. Universal Keywords for common Chinese Super Apps (WeChat, Baidu, ByteDance, etc.)
-    NSArray *universalKeywords = @[
-        @"TinyApp", @"MiniApp", @"MicroApp", @"MiniProgram", @"MiniGame",
-        @"WAWebView",
-        @"BAMiniProgram",
-        @"Swan",
-        @"TTMicroApp"
+    // Targeted keywords for Mini Programs, TinyApps (Alipay), and Web Games
+    NSArray *keywords = @[
+        @"Tiny", @"Mini", @"Micro", @"Game", @"WAWebView"
     ];
     
-    for (NSString *keyword in universalKeywords) {
+    for (NSString *keyword in keywords) {
         if ([vcClassStr containsString:keyword] || [navClassStr containsString:keyword]) {
             return YES;
         }
     }
-    
-    // 2. Aggressive Isolation for Alipay (com.alipay.iphoneclient)
-    // Alipay uses proprietary frameworks (Nebula, Ariver, mPaaS) heavily. 
-    // Blocking these prefix features ensures native compatibility.
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    if ([bundleID isEqualToString:@"com.alipay.iphoneclient"]) {
-        NSArray *alipayKeywords = @[
-            @"H5", @"NB", @"NX", @"RV", @"Tiny", @"Game", @"Ariver", @"Nebula"
-        ];
-        for (NSString *keyword in alipayKeywords) {
-            if ([vcClassStr containsString:keyword] || [navClassStr containsString:keyword]) {
-                return YES;
-            }
-        }
-    }
-    
     return NO;
 }
 
@@ -397,8 +384,14 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Core Interception: Abort gesture entirely inside Mini Program/Game containers
+    // Core Interception: Abort gesture entirely inside Mini Program/Web containers
     if ([LeftPanWindowHelper isMiniProgramViewController:topVC]) {
+        return NO;
+    }
+
+    // Core Interception: Abort gesture entirely inside rendering game engines (Unity, Metal, OpenGL)
+    // Upgraded logic: This check now applies globally to both Portrait and Landscape modes.
+    if ([LeftPanWindowHelper isGameViewController:topVC]) {
         return NO;
     }
 
@@ -406,9 +399,6 @@ static BOOL isSpecialApp_Huya(void) {
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
-        if ([LeftPanWindowHelper isGameViewController:topVC]) {
-            return NO;
-        }
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
         }
