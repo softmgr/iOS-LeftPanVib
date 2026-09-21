@@ -124,47 +124,26 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Visual Heuristic Isolation: Recursively scan the view hierarchy to find the iconic "..." & "X" capsule button.
-// This is the most reliable way to identify a Mini Program or Mini Game container without guessing framework classes.
-+ (BOOL)isMiniProgramCapsulePresentInView:(UIView *)view depth:(NSInteger)depth {
-    if (!view || depth > 8) return NO;
+// Custom UI State Heuristic: Accurately identifies Mini Programs & Games without fragile class name matching
++ (BOOL)isCustomUIContainer:(UIViewController *)vc {
+    if (!vc) return NO;
     
-    // Critical: Ignore cached or hidden views to prevent false positives on normal pages
-    if (view.hidden || view.alpha < 0.01) return NO;
-    
-    NSString *className = NSStringFromClass([view class]);
-    NSString *lowerClass = [className lowercaseString];
-    
-    // Check for universal "Capsule" term (WeChat, generic) and precise Alipay (TinyApp/Ariver) Option Menu components
-    if ([lowerClass containsString:@"capsule"] || 
-        [className containsString:@"TAOptionMenu"] || 
-        [className containsString:@"RVOptionMenu"] || 
-        [className isEqualToString:@"AUFloatMenu"]) {
+    // 1. WeChat Mini Program Check
+    if ([NSStringFromClass([vc class]) containsString:@"WAWebView"]) {
         return YES;
     }
     
-    for (UIView *subview in view.subviews) {
-        if ([self isMiniProgramCapsulePresentInView:subview depth:depth + 1]) {
-            return YES;
+    // 2. Alipay Navigation State Check
+    // Alipay Mini Programs and Games replace the native navigation bar with a custom capsule ("..." & "X").
+    // We disable the gesture when the native navigation bar is hidden to avoid transition crashes.
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if ([bundleID isEqualToString:@"com.alipay.iphoneclient"]) {
+        UINavigationController *nav = vc.navigationController;
+        if (nav) {
+            if (nav.navigationBarHidden || nav.navigationBar.isHidden || nav.navigationBar.alpha < 0.01) {
+                return YES;
+            }
         }
-    }
-    return NO;
-}
-
-// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
-+ (BOOL)isGameViewController:(UIViewController *)vc {
-    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
-    if (isSpecialApp_Huya()) {
-        return NO;
-    }
-
-    if (!vc || !vc.view) return NO;
-    NSString *viewClassStr = NSStringFromClass([vc.view class]);
-    if ([viewClassStr containsString:@"Unity"] || 
-        [viewClassStr containsString:@"EAGL"] || 
-        [viewClassStr containsString:@"MTKView"] ||
-        [viewClassStr containsString:@"FMetalView"]) {
-        return YES;
     }
     return NO;
 }
@@ -182,6 +161,24 @@ static BOOL isSpecialApp_Huya(void) {
         return YES;
     }
     if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) {
+        return YES;
+    }
+    return NO;
+}
+
+// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
++ (BOOL)isGameViewController:(UIViewController *)vc {
+    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
+    if (isSpecialApp_Huya()) {
+        return NO;
+    }
+
+    if (!vc || !vc.view) return NO;
+    NSString *viewClassStr = NSStringFromClass([vc.view class]);
+    if ([viewClassStr containsString:@"Unity"] || 
+        [viewClassStr containsString:@"EAGL"] || 
+        [viewClassStr containsString:@"MTKView"] ||
+        [viewClassStr containsString:@"FMetalView"]) {
         return YES;
     }
     return NO;
@@ -392,13 +389,14 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Global Interception 1: Abort gesture entirely inside Native Game Engines
-    if ([LeftPanWindowHelper isGameViewController:topVC]) {
+    // Global Interception 1: Disable gesture entirely inside highly custom containers (Alipay Mini Games)
+    if ([LeftPanWindowHelper isCustomUIContainer:topVC]) {
         return NO;
     }
 
-    // Global Interception 2: Abort gesture entirely if a Mini Program/Game Capsule is visibly present
-    if ([LeftPanWindowHelper isMiniProgramCapsulePresentInView:window depth:0]) {
+    // Global Interception 2: Disable gesture entirely inside rendering game engines
+    // Note: Upgraded to apply indiscriminately to both Portrait and Landscape orientations
+    if ([LeftPanWindowHelper isGameViewController:topVC]) {
         return NO;
     }
 
