@@ -6,19 +6,27 @@
 // ---------------------------------------------------------
 
 // 1. Trigger Zones
-#define kLPVPortraitZoneRatio (4.0 / 5.0)        // V27 UPDATED: Default: Active in rightmost 1/5 (20%)
-#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    // V27 UPDATED: Huya specific: Active in rightmost 1/5
-#define kLPVLandscapeZoneWidth 50.0              // V27 UPDATED: Active in extreme right edge for landscape (reduced)
+// Default: Active in rightmost 1/5 (20%)
+#define kLPVPortraitZoneRatio (4.0 / 5.0)        
+// Huya specific: Active in rightmost 1/5
+#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
+// Active in extreme right edge for landscape
+#define kLPVLandscapeZoneWidth 50.0              
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
 // 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
-#define kLPVPortraitSuccessTranslationRatio 0.35     // Default: 35% screen width for slow drags
-#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 // Huya specific: 20% screen width for short drags
-#define kLPVFallbackSuccessTranslation 100.0         // Absolute points for landscape slow drags
-#define kLPVFallbackSuccessVelocity 300.0            // Flick velocity threshold
-#define kLPVFallbackMinFlickTranslation 20.0         // Anti-jitter minimum distance
+// Default: 35% screen width for slow drags
+#define kLPVPortraitSuccessTranslationRatio 0.35     
+// Huya specific: 20% screen width for short drags
+#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
+// Absolute points for landscape slow drags
+#define kLPVFallbackSuccessTranslation 100.0         
+// Flick velocity threshold
+#define kLPVFallbackSuccessVelocity 300.0            
+// Anti-jitter minimum distance
+#define kLPVFallbackMinFlickTranslation 20.0         
 
 
 static char kWindowHelperKey;
@@ -114,6 +122,33 @@ static BOOL isSpecialApp_Huya(void) {
         p = p.parentViewController;
     }
     return nil;
+}
+
+// Core Boundary: Prohibit triggering in Mini Program containers (e.g., Alipay, WeChat) to avoid interfering with their internal navigation or games
++ (BOOL)isMiniProgramViewController:(UIViewController *)vc {
+    if (!vc) return NO;
+    NSString *vcClassStr = NSStringFromClass([vc class]);
+    
+    if ([vcClassStr containsString:@"TinyApp"] ||
+        [vcClassStr containsString:@"MiniApp"] ||
+        [vcClassStr containsString:@"MicroApp"] ||
+        [vcClassStr containsString:@"MiniProgram"] ||
+        [vcClassStr containsString:@"WAWebViewController"] || 
+        [vcClassStr containsString:@"H5WebViewController"] ||
+        [vcClassStr containsString:@"RVKViewController"]) {
+        return YES;
+    }
+    
+    if (vc.navigationController) {
+        NSString *navClassStr = NSStringFromClass([vc.navigationController class]);
+        if ([navClassStr containsString:@"TinyApp"] ||
+            [navClassStr containsString:@"MiniApp"] ||
+            [navClassStr containsString:@"MicroApp"] ||
+            [navClassStr containsString:@"MiniProgram"]) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 // Core Boundary: Only bypass stack check for Landscape mode. Portrait relies on strict checks.
@@ -361,9 +396,15 @@ static BOOL isSpecialApp_Huya(void) {
     }
 #pragma clang diagnostic pop
 
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+
+    // Disable gesture completely if the current view is a Mini Program container
+    if ([LeftPanWindowHelper isMiniProgramViewController:topVC]) {
+        return NO;
+    }
+
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if (isLandscape) {
         if ([LeftPanWindowHelper isGameViewController:topVC]) {
