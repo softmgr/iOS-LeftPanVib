@@ -6,27 +6,19 @@
 // ---------------------------------------------------------
 
 // 1. Trigger Zones
-// Default: Active in rightmost 1/5 (20%)
-#define kLPVPortraitZoneRatio (4.0 / 5.0)        
-// Huya specific: Active in rightmost 1/5
-#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
-// Active in extreme right edge for landscape
-#define kLPVLandscapeZoneWidth 50.0              
+#define kLPVPortraitZoneRatio (4.0 / 5.0)            // Default: Active in rightmost 1/5 (20%)
+#define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)        // Huya specific: Active in rightmost 1/5 (20%)
+#define kLPVLandscapeZoneWidth 50.0                  // Active in extreme right edge for landscape
 
 // 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
 
 // 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
-// Default: 35% screen width for slow drags
-#define kLPVPortraitSuccessTranslationRatio 0.35     
-// Huya specific: 20% screen width for short drags
-#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
-// Absolute points for landscape slow drags
-#define kLPVFallbackSuccessTranslation 100.0         
-// Flick velocity threshold
-#define kLPVFallbackSuccessVelocity 300.0            
-// Anti-jitter minimum distance
-#define kLPVFallbackMinFlickTranslation 20.0         
+#define kLPVPortraitSuccessTranslationRatio 0.35     // Default: 35% screen width for slow drags
+#define kLPVHuyaPortraitSuccessTranslationRatio 0.20 // Huya specific: 20% screen width for short drags
+#define kLPVFallbackSuccessTranslation 100.0         // Absolute points for landscape slow drags
+#define kLPVFallbackSuccessVelocity 300.0            // Flick velocity threshold
+#define kLPVFallbackMinFlickTranslation 20.0         // Anti-jitter minimum distance
 
 
 static char kWindowHelperKey;
@@ -84,7 +76,7 @@ static BOOL isSpecialApp_Huya(void) {
         _pan = [[LPVReversePanGesture alloc] initWithTarget:self action:@selector(handlePan:)];
         _pan.delegate = self;
         _pan.cancelsTouchesInView = YES;
-        // DELAY TOUCHES: Crucial for preventing scroll views / progress bars from stealing the swipe.
+        // Delay touches to prevent scroll views or interactive elements from stealing the swipe
         _pan.delaysTouchesBegan = YES;
         [window addGestureRecognizer:_pan];
     }
@@ -124,37 +116,49 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Core Boundary: Prohibit triggering in Mini Program containers (e.g., Alipay, WeChat) to avoid interfering with their internal navigation or games
+// Core Boundary: Prohibit triggering in Mini Program or Super App Web containers 
+// to avoid interfering with internal web history or specialized game engines.
 + (BOOL)isMiniProgramViewController:(UIViewController *)vc {
     if (!vc) return NO;
     NSString *vcClassStr = NSStringFromClass([vc class]);
+    NSString *navClassStr = vc.navigationController ? NSStringFromClass([vc.navigationController class]) : @"";
     
-    if ([vcClassStr containsString:@"TinyApp"] ||
-        [vcClassStr containsString:@"MiniApp"] ||
-        [vcClassStr containsString:@"MicroApp"] ||
-        [vcClassStr containsString:@"MiniProgram"] ||
-        [vcClassStr containsString:@"WAWebViewController"] || 
-        [vcClassStr containsString:@"H5WebViewController"] ||
-        [vcClassStr containsString:@"RVKViewController"]) {
-        return YES;
-    }
+    // 1. Universal Keywords for common Chinese Super Apps (WeChat, Baidu, ByteDance, etc.)
+    NSArray *universalKeywords = @[
+        @"TinyApp", @"MiniApp", @"MicroApp", @"MiniProgram", @"MiniGame",
+        @"WAWebView",
+        @"BAMiniProgram",
+        @"Swan",
+        @"TTMicroApp"
+    ];
     
-    if (vc.navigationController) {
-        NSString *navClassStr = NSStringFromClass([vc.navigationController class]);
-        if ([navClassStr containsString:@"TinyApp"] ||
-            [navClassStr containsString:@"MiniApp"] ||
-            [navClassStr containsString:@"MicroApp"] ||
-            [navClassStr containsString:@"MiniProgram"]) {
+    for (NSString *keyword in universalKeywords) {
+        if ([vcClassStr containsString:keyword] || [navClassStr containsString:keyword]) {
             return YES;
         }
     }
+    
+    // 2. Aggressive Isolation for Alipay (com.alipay.iphoneclient)
+    // Alipay uses proprietary frameworks (Nebula, Ariver, mPaaS) heavily. 
+    // Blocking these prefix features ensures native compatibility.
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if ([bundleID isEqualToString:@"com.alipay.iphoneclient"]) {
+        NSArray *alipayKeywords = @[
+            @"H5", @"NB", @"NX", @"RV", @"Tiny", @"Game", @"Ariver", @"Nebula"
+        ];
+        for (NSString *keyword in alipayKeywords) {
+            if ([vcClassStr containsString:keyword] || [navClassStr containsString:keyword]) {
+                return YES;
+            }
+        }
+    }
+    
     return NO;
 }
 
 // Core Boundary: Only bypass stack check for Landscape mode. Portrait relies on strict checks.
 + (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
-    // In landscape mode, edge swipes are universally intended to exit fullscreen video.
-    // Bypassing strict nav stack checks allows custom video players to exit normally.
+    // In landscape mode, edge swipes are universally intended to exit fullscreen content.
     if (isLandscape) {
         return YES;
     }
@@ -170,9 +174,9 @@ static BOOL isSpecialApp_Huya(void) {
     return NO;
 }
 
-// Core Boundary: Strictly prohibit triggering in game engine views to prevent interference with gameplay
+// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
 + (BOOL)isGameViewController:(UIViewController *)vc {
-    // Whitelist override. Huya uses Metal/OpenGL for video rendering, exempt it from game engine block.
+    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
     if (isSpecialApp_Huya()) {
         return NO;
     }
@@ -203,7 +207,7 @@ static BOOL isSpecialApp_Huya(void) {
     }
     
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
-    // Replaced UI_USER_INTERFACE_IDIOM() with modern API
+    
     if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
         NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
         if (ipadOrientations) {
@@ -268,7 +272,6 @@ static BOOL isSpecialApp_Huya(void) {
     UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
     
-    // Suppress the deprecation warning for the fallback statusBarOrientation
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
@@ -284,8 +287,7 @@ static BOOL isSpecialApp_Huya(void) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // For Huya, force useFallbackMode = YES to avoid the black screen 
-            // caused by its flawed custom interactive transition engine.
+            // Force Fallback mode for Huya to prevent transition engine crashes
             if (isSpecialApp_Huya()) {
                 self.useFallbackMode = YES;
             } else {
@@ -315,11 +317,9 @@ static BOOL isSpecialApp_Huya(void) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator ?: nav.transitionCoordinator;
                 if (coordinator && [coordinator initiallyInteractive]) {
-                    // Replaced notifyWhenInteractionEndsUsingBlock: with notifyWhenInteractionChangesUsingBlock:
                     if (@available(iOS 10.0, *)) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
-// Macro definition: Compile this haptic feedback code only if DISABLE_VIBRATION is not defined
 #ifndef DISABLE_VIBRATION
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
@@ -348,7 +348,7 @@ static BOOL isSpecialApp_Huya(void) {
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            // Apply the specialized smaller translation ratio for Huya
+            // Apply targeted translation ratios for customized apps
             CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitSuccessTranslationRatio : kLPVPortraitSuccessTranslationRatio;
             CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * ratio);
             success = (trans.x > requiredTrans);
@@ -358,7 +358,6 @@ static BOOL isSpecialApp_Huya(void) {
             BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
             
             dispatch_async(dispatch_get_main_queue(), ^{
-// Macro definition: Compile this haptic feedback code only if DISABLE_VIBRATION is not defined
 #ifndef DISABLE_VIBRATION
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
@@ -398,7 +397,7 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Disable gesture completely if the current view is a Mini Program container
+    // Core Interception: Abort gesture entirely inside Mini Program/Game containers
     if ([LeftPanWindowHelper isMiniProgramViewController:topVC]) {
         return NO;
     }
@@ -414,7 +413,6 @@ static BOOL isSpecialApp_Huya(void) {
             return NO;
         }
     } else {
-        // Use custom zone ratio for Huya, otherwise use default
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) {
             return NO;
@@ -429,7 +427,7 @@ static BOOL isSpecialApp_Huya(void) {
         return NO;
     }
 
-    // Pass isLandscape parameter. Prevents home screen misfires while keeping landscape robust.
+    // Pass isLandscape parameter to ensure precision in logic execution
     if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
         return NO;
     }
