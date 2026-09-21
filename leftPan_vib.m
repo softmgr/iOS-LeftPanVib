@@ -124,28 +124,69 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Core Boundary: Prohibit triggering in Mini Program or Game containers
-+ (BOOL)isMiniProgramViewController:(UIViewController *)vc {
-    if (!vc) return NO;
-    NSString *vcClassStr = NSStringFromClass([vc class]);
-    NSString *navClassStr = vc.navigationController ? NSStringFromClass([vc.navigationController class]) : @"";
+// Deeply search the view hierarchy to detect embedded game engine rendering surfaces
++ (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
+    if (!view || depth > 5) return NO;
     
-    // Targeted keywords for Mini Programs, TinyApps (Alipay), and Web Games
-    NSArray *keywords = @[
-        @"Tiny", @"Mini", @"Micro", @"Game", @"WAWebView"
-    ];
+    NSString *viewClass = NSStringFromClass([view class]);
+    if ([viewClass containsString:@"Unity"] || 
+        [viewClass containsString:@"EAGL"] || 
+        [viewClass containsString:@"MTKView"] ||
+        [viewClass containsString:@"FMetalView"] ||
+        [viewClass containsString:@"FCanvas"]) {
+        return YES;
+    }
     
-    for (NSString *keyword in keywords) {
-        if ([vcClassStr containsString:keyword] || [navClassStr containsString:keyword]) {
+    for (UIView *subview in view.subviews) {
+        if ([self hasGameEngineView:subview depth:depth + 1]) {
             return YES;
         }
     }
     return NO;
 }
 
-// Core Boundary: Only bypass stack check for Landscape mode. Portrait relies on strict checks.
+// Strictly prohibit triggering in game engine views to prevent gameplay interference
++ (BOOL)isGameViewController:(UIViewController *)vc {
+    // Exempt specific media apps that utilize graphics engines for video playback
+    if (isSpecialApp_Huya()) {
+        return NO;
+    }
+    if (!vc || !vc.view) return NO;
+    return [self hasGameEngineView:vc.view depth:0];
+}
+
+// Isolate Mini Program containers without blocking standard in-app web browser pages
++ (BOOL)isMiniProgramViewController:(UIViewController *)vc {
+    if (!vc) return NO;
+    NSString *vcClass = NSStringFromClass([vc class]);
+    NSString *navClass = vc.navigationController ? NSStringFromClass([vc.navigationController class]) : @"";
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    
+    // Universal keywords for generic mini program or micro game containers
+    if ([vcClass containsString:@"TinyApp"] || [navClass containsString:@"TinyApp"] ||
+        [vcClass containsString:@"MiniGame"] || [navClass containsString:@"MiniGame"] ||
+        [vcClass containsString:@"WAWebView"]) {
+        return YES;
+    }
+    
+    // Precise isolation logic strictly for Alipay (com.alipay.iphoneclient)
+    if ([bundleID isEqualToString:@"com.alipay.iphoneclient"]) {
+        // Alipay distinguishes Mini Programs (AppViewController) from normal Web Pages (WebViewController)
+        BOOL isAppVC = [vcClass containsString:@"AppViewController"] || [navClass containsString:@"AppViewController"];
+        BOOL isWebVC = [vcClass containsString:@"WebViewController"] || [navClass containsString:@"WebViewController"];
+        
+        // Block only if it is explicitly an App container and NOT a Web container
+        if (isAppVC && !isWebVC) {
+            return YES;
+        }
+    }
+    
+    return NO;
+}
+
+// Core Boundary: Bypass stack check for Landscape mode. Portrait relies on strict checks.
 + (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
-    // In landscape mode, edge swipes are universally intended to exit fullscreen content.
+    // In landscape mode, edge swipes are universally intended to exit fullscreen content
     if (isLandscape) {
         return YES;
     }
@@ -161,25 +202,7 @@ static BOOL isSpecialApp_Huya(void) {
     return NO;
 }
 
-// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
-+ (BOOL)isGameViewController:(UIViewController *)vc {
-    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
-    if (isSpecialApp_Huya()) {
-        return NO;
-    }
-
-    if (!vc || !vc.view) return NO;
-    NSString *viewClassStr = NSStringFromClass([vc.view class]);
-    if ([viewClassStr containsString:@"Unity"] || 
-        [viewClassStr containsString:@"EAGL"] || 
-        [viewClassStr containsString:@"MTKView"] ||
-        [viewClassStr containsString:@"FMetalView"]) {
-        return YES;
-    }
-    return NO;
-}
-
-// 3-Layer Interception Check: Accurately determine if the current app supports portrait orientation
+// Accurately determine if the current app supports portrait orientation
 + (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
     if (topVC) {
         UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
@@ -384,13 +407,13 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Core Interception: Abort gesture entirely inside Mini Program/Web containers
+    // Global interception: Abort gesture entirely inside Mini Program/Web containers
     if ([LeftPanWindowHelper isMiniProgramViewController:topVC]) {
         return NO;
     }
 
-    // Core Interception: Abort gesture entirely inside rendering game engines (Unity, Metal, OpenGL)
-    // Upgraded logic: This check now applies globally to both Portrait and Landscape modes.
+    // Global interception: Abort gesture entirely inside rendering game engines
+    // Applied indiscriminately to both Portrait and Landscape orientations
     if ([LeftPanWindowHelper isGameViewController:topVC]) {
         return NO;
     }
@@ -417,7 +440,7 @@ static BOOL isSpecialApp_Huya(void) {
         return NO;
     }
 
-    // Pass isLandscape parameter to ensure precision in logic execution
+    // Pass isLandscape parameter to ensure precision in logical execution
     if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
         return NO;
     }
