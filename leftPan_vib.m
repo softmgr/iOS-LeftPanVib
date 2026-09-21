@@ -1,39 +1,28 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+// =========================================================
+// DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
+// =========================================================
+#define ENABLE_DEBUG_LOGGING 1
+
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
 // ---------------------------------------------------------
-
-// 1. Trigger Zones
-// Default: Active in rightmost 1/5 (20%)
 #define kLPVPortraitZoneRatio (4.0 / 5.0)        
-// Huya specific: Active in rightmost 1/5
 #define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
-// Active in extreme right edge for landscape
 #define kLPVLandscapeZoneWidth 50.0              
-
-// 2. Intent Thresholds
 #define kLPVGestureStartVelocityThreshold -40.0
-
-// 3. Fallback Success Thresholds (Used for Custom Transition Apps & Landscape)
-// Default: 35% screen width for slow drags
 #define kLPVPortraitSuccessTranslationRatio 0.35     
-// Huya specific: 20% screen width for short drags
 #define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
-// Absolute points for landscape slow drags
 #define kLPVFallbackSuccessTranslation 100.0         
-// Flick velocity threshold
 #define kLPVFallbackSuccessVelocity 300.0            
-// Anti-jitter minimum distance
 #define kLPVFallbackMinFlickTranslation 20.0         
-
 
 static char kWindowHelperKey;
 
 #pragma mark - Special App Whitelist
 
-// Whitelist mechanism for highly customized apps
 static BOOL isSpecialApp_Huya(void) {
     static BOOL isHuya = NO;
     static dispatch_once_t onceToken;
@@ -44,7 +33,7 @@ static BOOL isSpecialApp_Huya(void) {
     return isHuya;
 }
 
-#pragma mark - Custom Gesture Recognizer (Coordinate Inversion)
+#pragma mark - Custom Gesture Recognizer
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
 - (CGPoint)rawVelocityInView:(UIView *)view;
@@ -63,7 +52,6 @@ static BOOL isSpecialApp_Huya(void) {
     return CGPointMake(-v.x, v.y);
 }
 @end
-
 
 #pragma mark - Main Window Helper
 
@@ -84,14 +72,13 @@ static BOOL isSpecialApp_Huya(void) {
         _pan = [[LPVReversePanGesture alloc] initWithTarget:self action:@selector(handlePan:)];
         _pan.delegate = self;
         _pan.cancelsTouchesInView = YES;
-        // Delay touches to prevent scroll views or interactive elements from stealing the swipe
         _pan.delaysTouchesBegan = YES;
         [window addGestureRecognizer:_pan];
     }
     return self;
 }
 
-#pragma mark - Controller, Engine & Orientation Lookup
+#pragma mark - Controller & Orientation Lookup (V27 Baseline)
 
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
@@ -124,75 +111,17 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Visual Heuristic: Scan view hierarchy for a visibly active capsule / option menu
-+ (BOOL)isCapsuleVisibleInView:(UIView *)view depth:(NSInteger)depth {
-    if (!view || depth > 12) return NO;
-    
-    // Skip hidden or tiny views to avoid false positives from cached/inactive components
-    if (view.hidden || view.alpha < 0.05 || view.bounds.size.width < 10 || view.bounds.size.height < 10) {
-        return NO;
-    }
-    
-    NSString *className = NSStringFromClass([view class]);
-    
-    // Look for typical floating menu class names used by Alipay and WeChat
-    if ([className containsString:@"Capsule"] || 
-        [className containsString:@"capsule"] || 
-        [className containsString:@"OptionMenu"] || 
-        [className containsString:@"FloatMenu"]) {
-        
-        UIWindow *window = view.window;
-        if (window) {
-            CGRect absFrame = [view convertRect:view.bounds toView:window];
-            
-            CGFloat minX = absFrame.origin.x;
-            CGFloat maxX = absFrame.origin.x + absFrame.size.width;
-            CGFloat minY = absFrame.origin.y;
-            CGFloat maxY = absFrame.origin.y + absFrame.size.height;
-            
-            CGFloat sWidth = window.bounds.size.width;
-            CGFloat sHeight = window.bounds.size.height;
-            
-            // Manual intersection check (replaces CGRectIntersectsRect to avoid CoreGraphics dependency)
-            // Capsules are positioned at the top of the screen and must intersect with screen bounds.
-            if (minY < sHeight / 2.0 && maxY > 0 && minX < sWidth && maxX > 0) {
-                return YES;
-            }
-        }
-    }
-    
-    for (UIView *subview in view.subviews) {
-        if ([self isCapsuleVisibleInView:subview depth:depth + 1]) {
-            return YES;
-        }
-    }
++ (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
+    if (isLandscape) return YES;
+    if (!topVC) return NO;
+    UINavigationController *nav = [self findNavControllerFor:topVC];
+    if (nav && nav.viewControllers.count > 1) return YES;
+    if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) return YES;
     return NO;
 }
 
-// Dual-State Isolation: Accurately identifies Mini Program Games by confirming TWO conditions:
-// 1. The native UINavigationBar is missing or hidden (indicating a full-screen mode).
-// 2. The iconic floating capsule button ("..." & "X") is visibly present on screen.
-+ (BOOL)isMiniProgramGameActive:(UIViewController *)topVC window:(UIWindow *)window {
-    // Condition 1: Check native navigation bar state
-    if (topVC.navigationController) {
-        UINavigationBar *navBar = topVC.navigationController.navigationBar;
-        // If a standard native navigation bar is visibly present, it's a normal page, NOT a mini game.
-        if (!navBar.isHidden && navBar.alpha > 0.05 && navBar.bounds.size.height > 10) {
-            return NO;
-        }
-    }
-    
-    // Condition 2: Scan for the floating capsule UI
-    return [self isCapsuleVisibleInView:window depth:0];
-}
-
-// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
 + (BOOL)isGameViewController:(UIViewController *)vc {
-    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
-    if (isSpecialApp_Huya()) {
-        return NO;
-    }
-
+    if (isSpecialApp_Huya()) return NO;
     if (!vc || !vc.view) return NO;
     NSString *viewClassStr = NSStringFromClass([vc.view class]);
     if ([viewClassStr containsString:@"Unity"] || 
@@ -204,25 +133,6 @@ static BOOL isSpecialApp_Huya(void) {
     return NO;
 }
 
-// Core Boundary: Bypass stack check for Landscape mode. Portrait relies on strict checks.
-+ (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
-    // In landscape mode, edge swipes are universally intended to exit fullscreen content
-    if (isLandscape) {
-        return YES;
-    }
-
-    if (!topVC) return NO;
-    UINavigationController *nav = [self findNavControllerFor:topVC];
-    if (nav && nav.viewControllers.count > 1) {
-        return YES;
-    }
-    if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) {
-        return YES;
-    }
-    return NO;
-}
-
-// Accurately determine if the current app supports portrait orientation
 + (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
     if (topVC) {
         UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
@@ -230,45 +140,33 @@ static BOOL isSpecialApp_Huya(void) {
             return NO; 
         }
     }
-    
     UIInterfaceOrientationMask appMask = [[UIApplication sharedApplication] supportedInterfaceOrientationsForWindow:window];
     if (appMask != 0 && !(appMask & UIInterfaceOrientationMaskPortrait) && !(appMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
         return NO; 
     }
-    
     NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
-    
     if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
         NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
-        if (ipadOrientations) {
-            supportedOrientations = ipadOrientations;
-        }
+        if (ipadOrientations) supportedOrientations = ipadOrientations;
     }
-    
     if (supportedOrientations && [supportedOrientations isKindOfClass:[NSArray class]]) {
         BOOL hasPortrait = NO;
         for (NSString *orientation in supportedOrientations) {
             if ([orientation isEqualToString:@"UIInterfaceOrientationPortrait"] ||
                 [orientation isEqualToString:@"UIInterfaceOrientationPortraitUpsideDown"]) {
-                hasPortrait = YES;
-                break;
+                hasPortrait = YES; break;
             }
         }
-        if (!hasPortrait) {
-            return NO; 
-        }
+        if (!hasPortrait) return NO; 
     }
     return YES;
 }
-
-#pragma mark - Device Orientation Control (Delayed Override)
 
 - (void)forcePortraitOrientation {
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
         [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
         [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
@@ -278,8 +176,7 @@ static BOOL isSpecialApp_Huya(void) {
             if (!scene) {
                 for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
                     if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
-                        scene = (UIWindowScene *)s;
-                        break;
+                        scene = (UIWindowScene *)s; break;
                     }
                 }
             }
@@ -292,6 +189,61 @@ static BOOL isSpecialApp_Huya(void) {
         }
     });
 }
+
+#pragma mark - Debug Information Dumper
+
+#if ENABLE_DEBUG_LOGGING
++ (NSString *)dumpViewHierarchy:(UIView *)view depth:(int)depth maxDepth:(int)maxDepth {
+    if (!view || depth > maxDepth) return @"";
+    NSMutableString *result = [NSMutableString string];
+    NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
+    [result appendFormat:@"%@ %@ (Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), view.alpha, view.isHidden];
+    
+    for (UIView *sub in view.subviews) {
+        [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
+    }
+    return result;
+}
+
++ (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
+    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG ===\n"];
+    [log appendFormat:@"Time: %@\n", [NSDate date]];
+    [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
+    [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
+    
+    [log appendFormat:@"\n[Controllers]\n"];
+    [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
+    if (topVC.parentViewController) {
+        [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
+    }
+    
+    UINavigationController *nav = [self findNavControllerFor:topVC];
+    [log appendFormat:@"NavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
+    if (nav) {
+        [log appendFormat:@"NavBarHidden: %d\n", nav.navigationBarHidden];
+    }
+    
+    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 5)]\n"];
+    if (topVC && topVC.view) {
+        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:5]];
+    }
+    
+    [log appendFormat:@"\n[Window View Hierarchy (Depth 3)]\n"];
+    if (window) {
+        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:3]];
+    }
+    
+    [log appendString:@"=====================\n"];
+    
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    pasteboard.string = log;
+    
+    // Heavy feedback to indicate successful log capture
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
+    [feedback prepare];
+    [feedback impactOccurred];
+}
+#endif
 
 #pragma mark - Gesture & Haptic Handling
 
@@ -312,12 +264,17 @@ static BOOL isSpecialApp_Huya(void) {
 #pragma clang diagnostic pop
     
     if (pan.state == UIGestureRecognizerStateBegan) {
+        
+#if ENABLE_DEBUG_LOGGING
+        // TRIGGER LOGGING WHEN GESTURE STARTS
+        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
+#endif
+        
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Force Fallback mode for Huya to prevent transition engine crashes
             if (isSpecialApp_Huya()) {
                 self.useFallbackMode = YES;
             } else {
@@ -378,7 +335,6 @@ static BOOL isSpecialApp_Huya(void) {
         } else if (vel.x < -kLPVFallbackSuccessVelocity) {
             success = NO;
         } else {
-            // Apply targeted translation ratios for customized apps
             CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitSuccessTranslationRatio : kLPVPortraitSuccessTranslationRatio;
             CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * ratio);
             success = (trans.x > requiredTrans);
@@ -393,7 +349,6 @@ static BOOL isSpecialApp_Huya(void) {
                 [feedback prepare];
                 [feedback impactOccurred];
 #endif
-                
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
@@ -427,21 +382,13 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Global Interception 1: Disable gesture entirely inside highly custom containers (Alipay Mini Games)
-    if ([LeftPanWindowHelper isMiniProgramGameActive:topVC window:window]) {
-        return NO;
-    }
-
-    // Global Interception 2: Disable gesture entirely inside rendering game engines
-    // Applied indiscriminately to both Portrait and Landscape orientations
-    if ([LeftPanWindowHelper isGameViewController:topVC]) {
-        return NO;
-    }
-
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
+        if ([LeftPanWindowHelper isGameViewController:topVC]) {
+            return NO;
+        }
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
         }
@@ -460,7 +407,6 @@ static BOOL isSpecialApp_Huya(void) {
         return NO;
     }
 
-    // Pass isLandscape parameter to ensure precision in logical execution
     if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
         return NO;
     }
