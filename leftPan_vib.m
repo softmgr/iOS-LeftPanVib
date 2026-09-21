@@ -4,7 +4,7 @@
 // =========================================================
 // DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 1
+#define ENABLE_DEBUG_LOGGING 0
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -78,7 +78,7 @@ static BOOL isSpecialApp_Huya(void) {
     return self;
 }
 
-#pragma mark - Controller & Orientation Lookup (V27 Baseline)
+#pragma mark - Controller & Orientation Lookup
 
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
@@ -120,15 +120,27 @@ static BOOL isSpecialApp_Huya(void) {
     return NO;
 }
 
-+ (BOOL)isGameViewController:(UIViewController *)vc {
-    if (isSpecialApp_Huya()) return NO;
-    if (!vc || !vc.view) return NO;
-    NSString *viewClassStr = NSStringFromClass([vc.view class]);
+// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
++ (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
+    if (!view || depth > 10) return NO;
+    
+    // Skip hidden or fully transparent views to avoid false positives from cached background pages
+    if (view.hidden || view.alpha < 0.05) return NO;
+    
+    NSString *viewClassStr = NSStringFromClass([view class]);
     if ([viewClassStr containsString:@"Unity"] || 
         [viewClassStr containsString:@"EAGL"] || 
         [viewClassStr containsString:@"MTKView"] ||
-        [viewClassStr containsString:@"FMetalView"]) {
+        [viewClassStr containsString:@"FMetalView"] ||
+        [viewClassStr containsString:@"XRNativeGame"] ||
+        [viewClassStr containsString:@"OpenGL"]) {
         return YES;
+    }
+    
+    for (UIView *subview in view.subviews) {
+        if ([self hasGameEngineView:subview depth:depth + 1]) {
+            return YES;
+        }
     }
     return NO;
 }
@@ -238,7 +250,6 @@ static BOOL isSpecialApp_Huya(void) {
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     pasteboard.string = log;
     
-    // Heavy feedback to indicate successful log capture
     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
     [feedback prepare];
     [feedback impactOccurred];
@@ -266,7 +277,6 @@ static BOOL isSpecialApp_Huya(void) {
     if (pan.state == UIGestureRecognizerStateBegan) {
         
 #if ENABLE_DEBUG_LOGGING
-        // TRIGGER LOGGING WHEN GESTURE STARTS
         [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
 #endif
         
@@ -382,13 +392,19 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
+    // Global Interception: Block any native game engine rendering views universally.
+    // This deep scan reliably identifies Alipay mini-games and standard Unity/Metal engines.
+    if (!isSpecialApp_Huya()) {
+        if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
+            [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
+            return NO;
+        }
+    }
+
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
-        if ([LeftPanWindowHelper isGameViewController:topVC]) {
-            return NO;
-        }
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
         }
