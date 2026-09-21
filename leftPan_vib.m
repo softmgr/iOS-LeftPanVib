@@ -144,13 +144,19 @@ static BOOL isSpecialApp_Huya(void) {
         UIWindow *window = view.window;
         if (window) {
             CGRect absFrame = [view convertRect:view.bounds toView:window];
-            CGRect screenBounds = window.bounds;
             
-            // Capsules are positioned at the top of the screen (y < half screen height)
-            if (absFrame.origin.y < screenBounds.size.height / 2.0) {
-                if (CGRectIntersectsRect(screenBounds, absFrame)) {
-                    return YES;
-                }
+            CGFloat minX = absFrame.origin.x;
+            CGFloat maxX = absFrame.origin.x + absFrame.size.width;
+            CGFloat minY = absFrame.origin.y;
+            CGFloat maxY = absFrame.origin.y + absFrame.size.height;
+            
+            CGFloat sWidth = window.bounds.size.width;
+            CGFloat sHeight = window.bounds.size.height;
+            
+            // Manual intersection check (replaces CGRectIntersectsRect to avoid CoreGraphics dependency)
+            // Capsules are positioned at the top of the screen and must intersect with screen bounds.
+            if (minY < sHeight / 2.0 && maxY > 0 && minX < sWidth && maxX > 0) {
+                return YES;
             }
         }
     }
@@ -421,8 +427,14 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Global Interception: Block Mini Program Games (e.g., Alipay games) that run full-screen with a floating capsule
+    // Global Interception 1: Disable gesture entirely inside highly custom containers (Alipay Mini Games)
     if ([LeftPanWindowHelper isMiniProgramGameActive:topVC window:window]) {
+        return NO;
+    }
+
+    // Global Interception 2: Disable gesture entirely inside rendering game engines
+    // Applied indiscriminately to both Portrait and Landscape orientations
+    if ([LeftPanWindowHelper isGameViewController:topVC]) {
         return NO;
     }
 
@@ -430,10 +442,6 @@ static BOOL isSpecialApp_Huya(void) {
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
-        // Intercept native 3D/GL Game rendering engines in landscape mode
-        if ([LeftPanWindowHelper isGameViewController:topVC]) {
-            return NO;
-        }
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
         }
