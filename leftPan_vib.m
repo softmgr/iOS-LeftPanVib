@@ -2,9 +2,9 @@
 #import <objc/runtime.h>
 
 // =========================================================
-// DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
+// DEBUG SWITCH: Set to 1 to enable Clipboard Logging for WeChat analysis
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 0
+#define ENABLE_DEBUG_LOGGING 1
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -235,14 +235,15 @@ static BOOL isSpecialApp_Huya(void) {
         [log appendFormat:@"NavBarHidden: %d\n", nav.navigationBarHidden];
     }
     
-    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 5)]\n"];
+    // Increased scanning depth to 8 to catch deep WeChat rendering engines
+    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 8)]\n"];
     if (topVC && topVC.view) {
-        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:5]];
+        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:8]];
     }
     
-    [log appendFormat:@"\n[Window View Hierarchy (Depth 3)]\n"];
+    [log appendFormat:@"\n[Window View Hierarchy (Depth 8)]\n"];
     if (window) {
-        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:3]];
+        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:8]];
     }
     
     [log appendString:@"=====================\n"];
@@ -393,7 +394,6 @@ static BOOL isSpecialApp_Huya(void) {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     // Global Interception: Block any native game engine rendering views universally.
-    // This deep scan reliably identifies Alipay mini-games and standard Unity/Metal engines.
     if (!isSpecialApp_Huya()) {
         if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
             [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
