@@ -124,63 +124,48 @@ static BOOL isSpecialApp_Huya(void) {
     return nil;
 }
 
-// Deeply search the view hierarchy to detect embedded game engine rendering surfaces
-+ (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
-    if (!view || depth > 5) return NO;
+// Visual Heuristic Isolation: Recursively scan the view hierarchy to find the iconic "..." & "X" capsule button.
+// This is the most reliable way to identify a Mini Program or Mini Game container without guessing framework classes.
++ (BOOL)isMiniProgramCapsulePresentInView:(UIView *)view depth:(NSInteger)depth {
+    if (!view || depth > 8) return NO;
     
-    NSString *viewClass = NSStringFromClass([view class]);
-    if ([viewClass containsString:@"Unity"] || 
-        [viewClass containsString:@"EAGL"] || 
-        [viewClass containsString:@"MTKView"] ||
-        [viewClass containsString:@"FMetalView"] ||
-        [viewClass containsString:@"FCanvas"]) {
+    // Critical: Ignore cached or hidden views to prevent false positives on normal pages
+    if (view.hidden || view.alpha < 0.01) return NO;
+    
+    NSString *className = NSStringFromClass([view class]);
+    NSString *lowerClass = [className lowercaseString];
+    
+    // Check for universal "Capsule" term (WeChat, generic) and precise Alipay (TinyApp/Ariver) Option Menu components
+    if ([lowerClass containsString:@"capsule"] || 
+        [className containsString:@"TAOptionMenu"] || 
+        [className containsString:@"RVOptionMenu"] || 
+        [className isEqualToString:@"AUFloatMenu"]) {
         return YES;
     }
     
     for (UIView *subview in view.subviews) {
-        if ([self hasGameEngineView:subview depth:depth + 1]) {
+        if ([self isMiniProgramCapsulePresentInView:subview depth:depth + 1]) {
             return YES;
         }
     }
     return NO;
 }
 
-// Strictly prohibit triggering in game engine views to prevent gameplay interference
+// Core Boundary: Strictly prohibit triggering in game engine views to prevent gameplay interference
 + (BOOL)isGameViewController:(UIViewController *)vc {
-    // Exempt specific media apps that utilize graphics engines for video playback
+    // Whitelist override: Huya uses Metal/OpenGL for video rendering, exempt it from the block
     if (isSpecialApp_Huya()) {
         return NO;
     }
-    if (!vc || !vc.view) return NO;
-    return [self hasGameEngineView:vc.view depth:0];
-}
 
-// Isolate Mini Program containers without blocking standard in-app web browser pages
-+ (BOOL)isMiniProgramViewController:(UIViewController *)vc {
-    if (!vc) return NO;
-    NSString *vcClass = NSStringFromClass([vc class]);
-    NSString *navClass = vc.navigationController ? NSStringFromClass([vc.navigationController class]) : @"";
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    
-    // Universal keywords for generic mini program or micro game containers
-    if ([vcClass containsString:@"TinyApp"] || [navClass containsString:@"TinyApp"] ||
-        [vcClass containsString:@"MiniGame"] || [navClass containsString:@"MiniGame"] ||
-        [vcClass containsString:@"WAWebView"]) {
+    if (!vc || !vc.view) return NO;
+    NSString *viewClassStr = NSStringFromClass([vc.view class]);
+    if ([viewClassStr containsString:@"Unity"] || 
+        [viewClassStr containsString:@"EAGL"] || 
+        [viewClassStr containsString:@"MTKView"] ||
+        [viewClassStr containsString:@"FMetalView"]) {
         return YES;
     }
-    
-    // Precise isolation logic strictly for Alipay (com.alipay.iphoneclient)
-    if ([bundleID isEqualToString:@"com.alipay.iphoneclient"]) {
-        // Alipay distinguishes Mini Programs (AppViewController) from normal Web Pages (WebViewController)
-        BOOL isAppVC = [vcClass containsString:@"AppViewController"] || [navClass containsString:@"AppViewController"];
-        BOOL isWebVC = [vcClass containsString:@"WebViewController"] || [navClass containsString:@"WebViewController"];
-        
-        // Block only if it is explicitly an App container and NOT a Web container
-        if (isAppVC && !isWebVC) {
-            return YES;
-        }
-    }
-    
     return NO;
 }
 
@@ -407,14 +392,13 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Global interception: Abort gesture entirely inside Mini Program/Web containers
-    if ([LeftPanWindowHelper isMiniProgramViewController:topVC]) {
+    // Global Interception 1: Abort gesture entirely inside Native Game Engines
+    if ([LeftPanWindowHelper isGameViewController:topVC]) {
         return NO;
     }
 
-    // Global interception: Abort gesture entirely inside rendering game engines
-    // Applied indiscriminately to both Portrait and Landscape orientations
-    if ([LeftPanWindowHelper isGameViewController:topVC]) {
+    // Global Interception 2: Abort gesture entirely if a Mini Program/Game Capsule is visibly present
+    if ([LeftPanWindowHelper isMiniProgramCapsulePresentInView:window depth:0]) {
         return NO;
     }
 
