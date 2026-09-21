@@ -2,9 +2,9 @@
 #import <objc/runtime.h>
 
 // =========================================================
-// DEBUG SWITCH: Set to 1 to enable Clipboard Logging for WeChat analysis
+// DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 1
+#define ENABLE_DEBUG_LOGGING 0
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -117,6 +117,26 @@ static BOOL isSpecialApp_Huya(void) {
     UINavigationController *nav = [self findNavControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) return YES;
     if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) return YES;
+    return NO;
+}
+
+// Targeted Interception: Isolate specific complex containers (like WeChat Mini Programs and Chats)
++ (BOOL)isForbiddenAppViewController:(UIViewController *)vc {
+    if (!vc) return NO;
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    NSString *vcClassStr = NSStringFromClass([vc class]);
+    
+    // WeChat Specific Rules
+    if ([bundleID isEqualToString:@"com.tencent.xin"]) {
+        // Explicitly block standard WeChat Mini Programs (WAWebView), Mini Games (WAGame),
+        // and Chat Views (BaseMsgContent) to prevent interference with internal horizontal gestures.
+        if ([vcClassStr containsString:@"WAWebView"] || 
+            [vcClassStr containsString:@"WAGame"] || 
+            [vcClassStr containsString:@"BaseMsgContent"]) {
+            return YES;
+        }
+    }
+    
     return NO;
 }
 
@@ -235,7 +255,6 @@ static BOOL isSpecialApp_Huya(void) {
         [log appendFormat:@"NavBarHidden: %d\n", nav.navigationBarHidden];
     }
     
-    // Increased scanning depth to 8 to catch deep WeChat rendering engines
     [log appendFormat:@"\n[TopVC View Hierarchy (Depth 8)]\n"];
     if (topVC && topVC.view) {
         [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:8]];
@@ -393,7 +412,12 @@ static BOOL isSpecialApp_Huya(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Global Interception: Block any native game engine rendering views universally.
+    // Global Interception 1: Prevent triggering inside known forbidden custom containers (e.g., WeChat Chat Views)
+    if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
+        return NO;
+    }
+
+    // Global Interception 2: Block any native game engine rendering views universally.
     if (!isSpecialApp_Huya()) {
         if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
             [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
