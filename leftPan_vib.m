@@ -33,23 +33,6 @@ static BOOL isSpecialApp_Huya(void) {
     return isHuya;
 }
 
-// Identify Baidu Tieba's custom Post Detail (PB) View Controllers
-static BOOL isTiebaPBViewController(UIViewController *vc) {
-    if (!vc) return NO;
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    if (![bundleID isEqualToString:@"com.baidu.tieba"]) return NO;
-    
-    NSString *vcClassStr = NSStringFromClass([vc class]);
-    NSString *parentClassStr = vc.parentViewController ? NSStringFromClass([vc.parentViewController class]) : @"";
-    
-    // "PBView" and "FirstFloor" are the core containers for Tieba threads.
-    if ([vcClassStr containsString:@"PBView"] || [parentClassStr containsString:@"PBView"] ||
-        [vcClassStr containsString:@"FirstFloor"] || [parentClassStr containsString:@"FirstFloor"]) {
-        return YES;
-    }
-    return NO;
-}
-
 #pragma mark - Custom Gesture Recognizer
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
@@ -95,8 +78,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return self;
 }
 
-#pragma mark - Controller & Orientation Lookup
+#pragma mark - Universal Hierarchy Armor-Piercing Algorithm
 
+// 1. Find the top-most visible View Controller
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -116,33 +100,67 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return root;
 }
 
-+ (UINavigationController *)findNavControllerFor:(UIViewController *)vc {
-    if ([vc isKindOfClass:[UINavigationController class]]) return (UINavigationController *)vc;
-    if (vc.navigationController) return vc.navigationController;
-    UIViewController *p = vc.parentViewController;
-    while (p) {
-        if ([p isKindOfClass:[UINavigationController class]]) return (UINavigationController *)p;
-        if (p.navigationController) return p.navigationController;
-        p = p.parentViewController;
+// 2. Armor-Piercing Nav Finder: Recursively climb the VC tree until we find the TRUE overarching
+//    UINavigationController that holds multiple views, bypassing any nested 1-count fake containers.
++ (UINavigationController *)findValidNavigationControllerFor:(UIViewController *)vc {
+    UIViewController *current = vc;
+    while (current) {
+        if (current.navigationController && current.navigationController.viewControllers.count > 1) {
+            return current.navigationController;
+        }
+        if ([current isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *nav = (UINavigationController *)current;
+            if (nav.viewControllers.count > 1) {
+                return nav;
+            }
+        }
+        current = current.parentViewController;
     }
     return nil;
 }
 
+// 3. Dynamic Backward Capability Check: Ensures we can pop or dismiss regardless of nesting layers
 + (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
-    // Safety Net: Always allow gesture on Tieba Post views so Fallback Mode can capture it.
-    if (isTiebaPBViewController(topVC)) return YES;
-    
-    UINavigationController *nav = [self findNavControllerFor:topVC];
-    if (nav && nav.viewControllers.count > 1) return YES;
-    if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) return YES;
-    
-    // Fallback support for Modally Presented Navigation Controllers
-    if (nav && nav.presentingViewController) return YES;
-    
+    UIViewController *current = topVC;
+    while (current) {
+        // Can we pop from a valid navigation stack?
+        if (current.navigationController && current.navigationController.viewControllers.count > 1) return YES;
+        if ([current isKindOfClass:[UINavigationController class]]) {
+            if (((UINavigationController *)current).viewControllers.count > 1) return YES;
+        }
+        // Can we dismiss a modally presented container?
+        if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) {
+            return YES;
+        }
+        current = current.parentViewController;
+    }
     return NO;
+}
+
+// 4. Ultimate Universal Close Method: Executes the pop or dismiss on the first valid container found.
++ (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
+    UIViewController *current = topVC;
+    while (current) {
+        if (current.navigationController && current.navigationController.viewControllers.count > 1) {
+            [current.navigationController popViewControllerAnimated:YES];
+            return;
+        }
+        if ([current isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *nav = (UINavigationController *)current;
+            if (nav.viewControllers.count > 1) {
+                [nav popViewControllerAnimated:YES];
+                return;
+            }
+        }
+        if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) {
+            [current dismissViewControllerAnimated:YES completion:nil];
+            return;
+        }
+        current = current.parentViewController;
+    }
 }
 
 // Targeted Interception: Isolate specific complex containers
@@ -159,13 +177,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             return YES;
         }
     }
-    
     return NO;
 }
 
+// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
-    
     if (view.hidden || view.alpha < 0.05) return NO;
     
     NSString *viewClassStr = NSStringFromClass([view class]);
@@ -243,11 +260,60 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     });
 }
 
+#pragma mark - Debug Information Dumper
+
+#if ENABLE_DEBUG_LOGGING
++ (NSString *)dumpViewHierarchy:(UIView *)view depth:(int)depth maxDepth:(int)maxDepth {
+    if (!view || depth > maxDepth) return @"";
+    NSMutableString *result = [NSMutableString string];
+    NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
+    
+    CGRect f = view.frame;
+    [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
+    
+    for (UIView *sub in view.subviews) {
+        [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
+    }
+    return result;
+}
+
++ (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
+    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG ===\n"];
+    [log appendFormat:@"Time: %@\n", [NSDate date]];
+    [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
+    [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
+    
+    [log appendFormat:@"\n[Controllers]\n"];
+    [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
+    if (topVC.parentViewController) {
+        [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
+    }
+    
+    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
+    [log appendFormat:@"ValidNavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
+    
+    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
+    if (topVC && topVC.view) {
+        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
+    }
+    
+    [log appendString:@"=====================\n"];
+    
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    pasteboard.string = log;
+    
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
+    [feedback prepare];
+    [feedback impactOccurred];
+}
+#endif
+
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
-    UINavigationController *nav = [LeftPanWindowHelper findNavControllerFor:topVC];
+    // Retrieve the true, valid Navigation Controller through piercing algorithm
+    UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
     
     UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
@@ -263,13 +329,16 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     
     if (pan.state == UIGestureRecognizerStateBegan) {
         
+#if ENABLE_DEBUG_LOGGING
+        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
+#endif
+        
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Force Fallback for Huya and Tieba Post details where system interactive transitions fail or are blocked
-            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
+            if (isSpecialApp_Huya()) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -302,9 +371,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
 #ifndef DISABLE_VIBRATION
+                                #if !ENABLE_DEBUG_LOGGING
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
                                 [feedback impactOccurred];
+                                #endif
 #endif
                             }
                         }];
@@ -313,11 +384,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             });
         }
     } else {
-        [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC nav:nav];
+        [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC];
     }
 }
 
-- (void)handleFallbackPan:(LPVReversePanGesture *)pan isLandscape:(BOOL)isLandscape topVC:(UIViewController *)topVC nav:(UINavigationController *)nav {
+- (void)handleFallbackPan:(LPVReversePanGesture *)pan isLandscape:(BOOL)isLandscape topVC:(UIViewController *)topVC {
     if (pan.state == UIGestureRecognizerStateEnded) {
         CGPoint trans = [pan translationInView:pan.view];
         CGPoint vel = [pan velocityInView:pan.view];
@@ -339,41 +410,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
+                #if !ENABLE_DEBUG_LOGGING
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
+                #endif
 #endif
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
-                    
-                    // The Ultimate Brute-Force Pop for Tieba Post Views
-                    // Tieba's TBCNavigationController overrides and disables standard pop methods.
-                    // We extract the pure, unadulterated native implementation from UIKit to bypass their block.
-                    if (isTiebaPBViewController(topVC)) {
-                        if (nav && nav.viewControllers.count > 1) {
-                            Method nativeMethod = class_getInstanceMethod([UINavigationController class], @selector(popViewControllerAnimated:));
-                            if (nativeMethod) {
-                                IMP nativeImp = method_getImplementation(nativeMethod);
-                                ((UIViewController* (*)(id, SEL, BOOL))nativeImp)(nav, @selector(popViewControllerAnimated:), YES);
-                            }
-                            return;
-                        } else if (nav && nav.presentingViewController) {
-                            [nav dismissViewControllerAnimated:YES completion:nil];
-                            return;
-                        }
-                    }
-                    
-                    // Standard routing for normal Fallback mode execution
-                    if (nav && nav.viewControllers.count > 1) {
-                        [nav popViewControllerAnimated:YES];
-                    } else if (nav && nav.presentingViewController) {
-                        [nav dismissViewControllerAnimated:YES completion:nil];
-                    } else if (topVC && topVC.presentingViewController) {
-                        [topVC dismissViewControllerAnimated:YES completion:nil];
-                    } else if (topVC.parentViewController && topVC.parentViewController.presentingViewController) {
-                        [topVC.parentViewController dismissViewControllerAnimated:YES completion:nil];
-                    }
+                    // Call the Ultimate Universal Close Method
+                    [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
                 }
             });
         }
