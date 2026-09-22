@@ -132,8 +132,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
-    // Safety Net: Tieba Post views might have a non-standard navigation stack (e.g., count = 1).
-    // Always authorize the gesture to begin here, so it can hijack the system's interactive transition engine.
+    // Safety Net: Always allow gesture on Tieba Post views so Fallback Mode can capture it.
     if (isTiebaPBViewController(topVC)) return YES;
     
     UINavigationController *nav = [self findNavControllerFor:topVC];
@@ -329,10 +328,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Tieba's Post detail (PBView) uses a standard interactive transition under the hood, 
-            // even though it hides it well. We MUST feed our pan data to handleNavigationTransition:
-            // rather than abruptly closing it with useFallbackMode.
-            if (isSpecialApp_Huya()) {
+            // Restore Tieba checking here to explicitly enforce Fallback Mode! 
+            // Because Tieba's PBView natively ignores/blocks the system interactive gesture.
+            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -413,7 +411,19 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
-                    // Fallback routing logic explicitly covers modally presented components and nested structures
+                    
+                    // Unblockable Brute-Force Pop for Tieba Post Views
+                    // Direct mutation of the ViewControllers array bypasses maliciously overridden popViewControllerAnimated: blocks
+                    if (isTiebaPBViewController(topVC)) {
+                        if (nav && nav.viewControllers.count > 1) {
+                            NSMutableArray *vcs = [nav.viewControllers mutableCopy];
+                            [vcs removeLastObject];
+                            [nav setViewControllers:vcs animated:YES];
+                            return; // Stop further execution once aggressively popped
+                        }
+                    }
+                    
+                    // Standard routing for normal Fallback mode execution
                     if (nav && nav.viewControllers.count > 1) {
                         [nav popViewControllerAnimated:YES];
                     } else if (nav && nav.presentingViewController) {
@@ -422,9 +432,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                         [topVC dismissViewControllerAnimated:YES completion:nil];
                     } else if (topVC.parentViewController && topVC.parentViewController.presentingViewController) {
                         [topVC.parentViewController dismissViewControllerAnimated:YES completion:nil];
-                    } else if (isTiebaPBViewController(topVC)) {
-                        // Ultimate brute-force fallback for Tieba if all modal checks fail
-                        [nav popViewControllerAnimated:YES];
                     }
                 }
             });
