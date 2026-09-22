@@ -243,62 +243,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     });
 }
 
-#pragma mark - Debug Information Dumper
-
-#if ENABLE_DEBUG_LOGGING
-+ (NSString *)dumpViewHierarchy:(UIView *)view depth:(int)depth maxDepth:(int)maxDepth {
-    if (!view || depth > maxDepth) return @"";
-    NSMutableString *result = [NSMutableString string];
-    NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
-    
-    CGRect f = view.frame;
-    [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
-    
-    for (UIView *sub in view.subviews) {
-        [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
-    }
-    return result;
-}
-
-+ (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
-    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG (TIEBA RADAR) ===\n"];
-    [log appendFormat:@"Time: %@\n", [NSDate date]];
-    [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
-    [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
-    
-    [log appendFormat:@"\n[Controllers]\n"];
-    [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
-    if (topVC.parentViewController) {
-        [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
-    }
-    
-    UINavigationController *nav = [self findNavControllerFor:topVC];
-    [log appendFormat:@"NavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
-    if (nav) {
-        [log appendFormat:@"NavBarHidden: %d\n", nav.navigationBarHidden];
-    }
-    
-    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
-    if (topVC && topVC.view) {
-        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
-    }
-    
-    [log appendFormat:@"\n[Window View Hierarchy (Depth 12)]\n"];
-    if (window) {
-        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:12]];
-    }
-    
-    [log appendString:@"=====================\n"];
-    
-    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-    pasteboard.string = log;
-    
-    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
-    [feedback prepare];
-    [feedback impactOccurred];
-}
-#endif
-
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
@@ -319,17 +263,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     
     if (pan.state == UIGestureRecognizerStateBegan) {
         
-#if ENABLE_DEBUG_LOGGING
-        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
-#endif
-        
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Restore Tieba checking here to explicitly enforce Fallback Mode! 
-            // Because Tieba's PBView natively ignores/blocks the system interactive gesture.
+            // Force Fallback for Huya and Tieba Post details where system interactive transitions fail or are blocked
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
                 self.useFallbackMode = YES;
             } else {
@@ -363,11 +302,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
 #ifndef DISABLE_VIBRATION
-                                #if !ENABLE_DEBUG_LOGGING
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
                                 [feedback impactOccurred];
-                                #endif
 #endif
                             }
                         }];
@@ -402,24 +339,28 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
-                #if !ENABLE_DEBUG_LOGGING
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
-                #endif
 #endif
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
                     
-                    // Unblockable Brute-Force Pop for Tieba Post Views
-                    // Direct mutation of the ViewControllers array bypasses maliciously overridden popViewControllerAnimated: blocks
+                    // The Ultimate Brute-Force Pop for Tieba Post Views
+                    // Tieba's TBCNavigationController overrides and disables standard pop methods.
+                    // We extract the pure, unadulterated native implementation from UIKit to bypass their block.
                     if (isTiebaPBViewController(topVC)) {
                         if (nav && nav.viewControllers.count > 1) {
-                            NSMutableArray *vcs = [nav.viewControllers mutableCopy];
-                            [vcs removeLastObject];
-                            [nav setViewControllers:vcs animated:YES];
-                            return; // Stop further execution once aggressively popped
+                            Method nativeMethod = class_getInstanceMethod([UINavigationController class], @selector(popViewControllerAnimated:));
+                            if (nativeMethod) {
+                                IMP nativeImp = method_getImplementation(nativeMethod);
+                                ((UIViewController* (*)(id, SEL, BOOL))nativeImp)(nav, @selector(popViewControllerAnimated:), YES);
+                            }
+                            return;
+                        } else if (nav && nav.presentingViewController) {
+                            [nav dismissViewControllerAnimated:YES completion:nil];
+                            return;
                         }
                     }
                     
