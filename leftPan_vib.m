@@ -2,10 +2,9 @@
 #import <objc/runtime.h>
 
 // =========================================================
-// DEBUG SWITCH: Set to 1 to enable Clipboard Logging
-// (Currently ENABLED for Baidu Tieba Analysis)
+// DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 1
+#define ENABLE_DEBUG_LOGGING 0
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -32,6 +31,23 @@ static BOOL isSpecialApp_Huya(void) {
         isHuya = [bundleID isEqualToString:@"com.yy.kiwi"];
     });
     return isHuya;
+}
+
+// Identify Baidu Tieba's custom Post Detail (PB) View Controllers
+static BOOL isTiebaPBViewController(UIViewController *vc) {
+    if (!vc) return NO;
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if (![bundleID isEqualToString:@"com.baidu.tieba"]) return NO;
+    
+    NSString *vcClassStr = NSStringFromClass([vc class]);
+    NSString *parentClassStr = vc.parentViewController ? NSStringFromClass([vc.parentViewController class]) : @"";
+    
+    // "PBView" and "FirstFloor" are the core containers for Tieba threads.
+    if ([vcClassStr containsString:@"PBView"] || [parentClassStr containsString:@"PBView"] ||
+        [vcClassStr containsString:@"FirstFloor"] || [parentClassStr containsString:@"FirstFloor"]) {
+        return YES;
+    }
+    return NO;
 }
 
 #pragma mark - Custom Gesture Recognizer
@@ -115,6 +131,10 @@ static BOOL isSpecialApp_Huya(void) {
 + (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
     if (isLandscape) return YES;
     if (!topVC) return NO;
+    
+    // Safety Net: Tieba Post views should always allow edge swipes
+    if (isTiebaPBViewController(topVC)) return YES;
+    
     UINavigationController *nav = [self findNavControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) return YES;
     if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) return YES;
@@ -228,7 +248,6 @@ static BOOL isSpecialApp_Huya(void) {
     NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
     
     CGRect f = view.frame;
-    // Log class name, frame (X, Y, W, H), alpha, and hidden status to identify floating ads and widgets
     [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
     
     for (UIView *sub in view.subviews) {
@@ -255,7 +274,6 @@ static BOOL isSpecialApp_Huya(void) {
         [log appendFormat:@"NavBarHidden: %d\n", nav.navigationBarHidden];
     }
     
-    // Increased scan depth to 12 to catch deeply nested ad frames and overlays
     [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
     if (topVC && topVC.view) {
         [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
@@ -271,7 +289,6 @@ static BOOL isSpecialApp_Huya(void) {
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     pasteboard.string = log;
     
-    // Heavy feedback to indicate successful log capture
     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
     [feedback prepare];
     [feedback impactOccurred];
@@ -299,7 +316,6 @@ static BOOL isSpecialApp_Huya(void) {
     if (pan.state == UIGestureRecognizerStateBegan) {
         
 #if ENABLE_DEBUG_LOGGING
-        // Trigger log dump in debug mode
         [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
 #endif
         
@@ -308,7 +324,8 @@ static BOOL isSpecialApp_Huya(void) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            if (isSpecialApp_Huya()) {
+            // Force Fallback for Huya and Tieba Post details where system interactive transitions fail or are blocked
+            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -341,7 +358,6 @@ static BOOL isSpecialApp_Huya(void) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
 #ifndef DISABLE_VIBRATION
-                                // Avoid double vibration in debug mode
                                 #if !ENABLE_DEBUG_LOGGING
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
@@ -394,6 +410,9 @@ static BOOL isSpecialApp_Huya(void) {
                         [nav popViewControllerAnimated:YES];
                     } else if (topVC && topVC.presentingViewController) {
                         [topVC dismissViewControllerAnimated:YES completion:nil];
+                    } else if (isTiebaPBViewController(topVC) && nav) {
+                        // Tieba Absolute Fallback: Force popping the custom navigation container
+                        [nav popViewControllerAnimated:YES];
                     }
                 }
             });
@@ -421,7 +440,6 @@ static BOOL isSpecialApp_Huya(void) {
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
-    // 1. First, strictly enforce the edge swipe zone
     if (isLandscape) {
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
@@ -433,16 +451,6 @@ static BOOL isSpecialApp_Huya(void) {
         }
     }
 
-#if ENABLE_DEBUG_LOGGING
-    // 2. DEBUG MODE OVERRIDE: If the user swiped in the correct edge zone, 
-    // bypass all blocking checks below. Let the gesture begin so handlePan can capture the log!
-    return YES;
-#endif
-
-    // -------------------------------------------------------------
-    // NORMAL EXECUTION RULES (Skipped during debug logging)
-    // -------------------------------------------------------------
-    
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
