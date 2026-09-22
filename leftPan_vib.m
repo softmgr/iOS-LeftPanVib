@@ -132,12 +132,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
-    // Safety Net: Tieba Post views should always allow edge swipes
+    // Safety Net: Tieba Post views might have a non-standard navigation stack (e.g., count = 1).
+    // Always authorize the gesture to begin here, so it can hijack the system's interactive transition engine.
     if (isTiebaPBViewController(topVC)) return YES;
     
     UINavigationController *nav = [self findNavControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) return YES;
     if (topVC.presentingViewController && ![topVC isKindOfClass:[UITabBarController class]]) return YES;
+    
+    // Fallback support for Modally Presented Navigation Controllers
+    if (nav && nav.presentingViewController) return YES;
+    
     return NO;
 }
 
@@ -324,8 +329,10 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Force Fallback for Huya and Tieba Post details where system interactive transitions fail or are blocked
-            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
+            // Tieba's Post detail (PBView) uses a standard interactive transition under the hood, 
+            // even though it hides it well. We MUST feed our pan data to handleNavigationTransition:
+            // rather than abruptly closing it with useFallbackMode.
+            if (isSpecialApp_Huya()) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -406,12 +413,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
+                    // Fallback routing logic explicitly covers modally presented components and nested structures
                     if (nav && nav.viewControllers.count > 1) {
                         [nav popViewControllerAnimated:YES];
+                    } else if (nav && nav.presentingViewController) {
+                        [nav dismissViewControllerAnimated:YES completion:nil];
                     } else if (topVC && topVC.presentingViewController) {
                         [topVC dismissViewControllerAnimated:YES completion:nil];
-                    } else if (isTiebaPBViewController(topVC) && nav) {
-                        // Tieba Absolute Fallback: Force popping the custom navigation container
+                    } else if (topVC.parentViewController && topVC.parentViewController.presentingViewController) {
+                        [topVC.parentViewController dismissViewControllerAnimated:YES completion:nil];
+                    } else if (isTiebaPBViewController(topVC)) {
+                        // Ultimate brute-force fallback for Tieba if all modal checks fail
                         [nav popViewControllerAnimated:YES];
                     }
                 }
