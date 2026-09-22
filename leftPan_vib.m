@@ -2,9 +2,10 @@
 #import <objc/runtime.h>
 
 // =========================================================
-// DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
+// DEBUG SWITCH: Set to 1 to enable Clipboard Logging
+// (Currently ENABLED for Baidu Tieba Analysis)
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 0
+#define ENABLE_DEBUG_LOGGING 1
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -120,7 +121,7 @@ static BOOL isSpecialApp_Huya(void) {
     return NO;
 }
 
-// Targeted Interception: Isolate specific complex containers (like WeChat Mini Programs and Chats)
+// Targeted Interception: Isolate specific complex containers
 + (BOOL)isForbiddenAppViewController:(UIViewController *)vc {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -128,8 +129,6 @@ static BOOL isSpecialApp_Huya(void) {
     
     // WeChat Specific Rules
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
-        // Explicitly block standard WeChat Mini Programs (WAWebView), Mini Games (WAGame),
-        // and Chat Views (BaseMsgContent) to prevent interference with internal horizontal gestures.
         if ([vcClassStr containsString:@"WAWebView"] || 
             [vcClassStr containsString:@"WAGame"] || 
             [vcClassStr containsString:@"BaseMsgContent"]) {
@@ -140,11 +139,9 @@ static BOOL isSpecialApp_Huya(void) {
     return NO;
 }
 
-// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     
-    // Skip hidden or fully transparent views to avoid false positives from cached background pages
     if (view.hidden || view.alpha < 0.05) return NO;
     
     NSString *viewClassStr = NSStringFromClass([view class]);
@@ -229,7 +226,10 @@ static BOOL isSpecialApp_Huya(void) {
     if (!view || depth > maxDepth) return @"";
     NSMutableString *result = [NSMutableString string];
     NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
-    [result appendFormat:@"%@ %@ (Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), view.alpha, view.isHidden];
+    
+    CGRect f = view.frame;
+    // Log class name, frame (X, Y, W, H), alpha, and hidden status to identify floating ads and widgets
+    [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
     
     for (UIView *sub in view.subviews) {
         [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
@@ -238,7 +238,7 @@ static BOOL isSpecialApp_Huya(void) {
 }
 
 + (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
-    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG ===\n"];
+    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG (TIEBA RADAR) ===\n"];
     [log appendFormat:@"Time: %@\n", [NSDate date]];
     [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
     [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
@@ -255,14 +255,15 @@ static BOOL isSpecialApp_Huya(void) {
         [log appendFormat:@"NavBarHidden: %d\n", nav.navigationBarHidden];
     }
     
-    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 8)]\n"];
+    // Increased scan depth to 12 to catch deeply nested ad frames and overlays
+    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
     if (topVC && topVC.view) {
-        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:8]];
+        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
     }
     
-    [log appendFormat:@"\n[Window View Hierarchy (Depth 8)]\n"];
+    [log appendFormat:@"\n[Window View Hierarchy (Depth 12)]\n"];
     if (window) {
-        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:8]];
+        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:12]];
     }
     
     [log appendString:@"=====================\n"];
@@ -270,6 +271,7 @@ static BOOL isSpecialApp_Huya(void) {
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     pasteboard.string = log;
     
+    // Heavy feedback to indicate successful log capture
     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
     [feedback prepare];
     [feedback impactOccurred];
@@ -297,6 +299,7 @@ static BOOL isSpecialApp_Huya(void) {
     if (pan.state == UIGestureRecognizerStateBegan) {
         
 #if ENABLE_DEBUG_LOGGING
+        // Trigger log dump in debug mode
         [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
 #endif
         
@@ -338,9 +341,12 @@ static BOOL isSpecialApp_Huya(void) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
 #ifndef DISABLE_VIBRATION
+                                // Avoid double vibration in debug mode
+                                #if !ENABLE_DEBUG_LOGGING
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
                                 [feedback impactOccurred];
+                                #endif
 #endif
                             }
                         }];
@@ -375,9 +381,11 @@ static BOOL isSpecialApp_Huya(void) {
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
+                #if !ENABLE_DEBUG_LOGGING
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
+                #endif
 #endif
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
@@ -410,24 +418,10 @@ static BOOL isSpecialApp_Huya(void) {
     }
 #pragma clang diagnostic pop
 
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
-
-    // Global Interception 1: Prevent triggering inside known forbidden custom containers (e.g., WeChat Chat Views)
-    if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
-        return NO;
-    }
-
-    // Global Interception 2: Block any native game engine rendering views universally.
-    if (!isSpecialApp_Huya()) {
-        if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
-            [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
-            return NO;
-        }
-    }
-
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
+    // 1. First, strictly enforce the edge swipe zone
     if (isLandscape) {
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
@@ -435,6 +429,29 @@ static BOOL isSpecialApp_Huya(void) {
     } else {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) {
+            return NO;
+        }
+    }
+
+#if ENABLE_DEBUG_LOGGING
+    // 2. DEBUG MODE OVERRIDE: If the user swiped in the correct edge zone, 
+    // bypass all blocking checks below. Let the gesture begin so handlePan can capture the log!
+    return YES;
+#endif
+
+    // -------------------------------------------------------------
+    // NORMAL EXECUTION RULES (Skipped during debug logging)
+    // -------------------------------------------------------------
+    
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+
+    if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
+        return NO;
+    }
+
+    if (!isSpecialApp_Huya()) {
+        if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
+            [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
             return NO;
         }
     }
