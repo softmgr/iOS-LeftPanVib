@@ -4,7 +4,7 @@
 // =========================================================
 // DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 0
+#define ENABLE_DEBUG_LOGGING 1
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -42,7 +42,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *vcClassStr = NSStringFromClass([vc class]);
     NSString *parentClassStr = vc.parentViewController ? NSStringFromClass([vc.parentViewController class]) : @"";
     
-    // "PBView" and "FirstFloor" are the core containers for Tieba threads.
     if ([vcClassStr containsString:@"PBView"] || [parentClassStr containsString:@"PBView"] ||
         [vcClassStr containsString:@"FirstFloor"] || [parentClassStr containsString:@"FirstFloor"]) {
         return YES;
@@ -179,10 +178,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSString *vcClassStr = NSStringFromClass([vc class]);
     
-    // WeChat Specific Rules
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
-        // Only block actual WeChat Mini Programs (WAWebView) and Mini Games (WAGame)
-        // BaseMsgContent has been removed from this list to allow normal chat views to swipe back.
         if ([vcClassStr containsString:@"WAWebView"] || 
             [vcClassStr containsString:@"WAGame"]) {
             return YES;
@@ -191,7 +187,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
@@ -450,6 +445,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
 
+#if ENABLE_DEBUG_LOGGING
+    // -------------------------------------------------------------
+    // ULTIMATE GOD MODE (DEBUG ONLY)
+    // Instantly intercepts and authorizes the gesture regardless of zone, 
+    // velocity, game engines, or view hierarchies. Guaranteed to dump logs!
+    // -------------------------------------------------------------
+    return YES;
+#endif
+
     UIWindow *window = self.pan.view.window ?: self.window;
     BOOL isLandscape = NO;
     
@@ -465,7 +469,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
-    // 1. Validate the trigger zone
     if (isLandscape) {
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
@@ -476,18 +479,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             return NO;
         }
     }
-
-#if ENABLE_DEBUG_LOGGING
-    // 2. DEBUG RADAR OVERRIDE:
-    // If debug is on and the swipe occurred in the correct edge zone, 
-    // strictly bypass all blocking checks below. This guarantees that handlePan 
-    // fires and captures the deep view hierarchy logs, even in blocked games!
-    return YES;
-#endif
-
-    // -------------------------------------------------------------
-    // NORMAL EXECUTION RULES (Skipped during debug logging)
-    // -------------------------------------------------------------
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
@@ -522,12 +513,22 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
+        
+#if ENABLE_DEBUG_LOGGING
+        // In God Mode, ensure our diagnostic pan has absolute priority over internal scroll views
+        return YES;
+#endif
         return YES;
     }
     return NO;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+#if ENABLE_DEBUG_LOGGING
+    // In God Mode, allow simultaneous recognition so aggressive underlying webviews 
+    // or flutter canvases cannot silently consume the touch before we grab the log.
+    return YES;
+#endif
     return NO;
 }
 
