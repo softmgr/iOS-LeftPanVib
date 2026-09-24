@@ -4,7 +4,7 @@
 // =========================================================
 // DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 1
+#define ENABLE_DEBUG_LOGGING 0
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -42,6 +42,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *vcClassStr = NSStringFromClass([vc class]);
     NSString *parentClassStr = vc.parentViewController ? NSStringFromClass([vc.parentViewController class]) : @"";
     
+    // "PBView" and "FirstFloor" are the core containers for Tieba threads.
     if ([vcClassStr containsString:@"PBView"] || [parentClassStr containsString:@"PBView"] ||
         [vcClassStr containsString:@"FirstFloor"] || [parentClassStr containsString:@"FirstFloor"]) {
         return YES;
@@ -136,7 +137,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
+    // Safety Net 1: Tieba PBViews
     if (isTiebaPBViewController(topVC)) return YES;
+    
+    // Safety Net 2: WeChat Mini Programs (WAWebView)
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    NSString *vcClassStr = NSStringFromClass([topVC class]);
+    if ([bundleID isEqualToString:@"com.tencent.xin"] && [vcClassStr containsString:@"WAWebView"]) {
+        return YES; 
+    }
     
     UIViewController *current = topVC;
     while (current) {
@@ -179,14 +188,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *vcClassStr = NSStringFromClass([vc class]);
     
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
-        if ([vcClassStr containsString:@"WAWebView"] || 
-            [vcClassStr containsString:@"WAGame"]) {
+        // ONLY block actual WeChat Mini Games (WAGame).
+        // Standard Mini Programs (WAWebView) and Chats (BaseMsgContent) are allowed 
+        // to ensure smooth swipe-to-back functionality.
+        if ([vcClassStr containsString:@"WAGame"]) {
             return YES;
         }
     }
     return NO;
 }
 
+// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
@@ -515,7 +527,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         
 #if ENABLE_DEBUG_LOGGING
-        // In God Mode, ensure our diagnostic pan has absolute priority over internal scroll views
         return YES;
 #endif
         return YES;
@@ -525,8 +536,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
 #if ENABLE_DEBUG_LOGGING
-    // In God Mode, allow simultaneous recognition so aggressive underlying webviews 
-    // or flutter canvases cannot silently consume the touch before we grab the log.
     return YES;
 #endif
     return NO;
