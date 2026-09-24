@@ -308,6 +308,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
     }
     
+    [log appendFormat:@"\n[Window View Hierarchy (Depth 12)]\n"];
+    if (window) {
+        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:12]];
+    }
+    
     [log appendString:@"=====================\n"];
     
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
@@ -460,6 +465,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
+    // 1. Validate the trigger zone
     if (isLandscape) {
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
             return NO;
@@ -470,6 +476,18 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             return NO;
         }
     }
+
+#if ENABLE_DEBUG_LOGGING
+    // 2. DEBUG RADAR OVERRIDE:
+    // If debug is on and the swipe occurred in the correct edge zone, 
+    // strictly bypass all blocking checks below. This guarantees that handlePan 
+    // fires and captures the deep view hierarchy logs, even in blocked games!
+    return YES;
+#endif
+
+    // -------------------------------------------------------------
+    // NORMAL EXECUTION RULES (Skipped during debug logging)
+    // -------------------------------------------------------------
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
