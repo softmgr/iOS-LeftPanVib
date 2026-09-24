@@ -93,7 +93,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return self;
 }
 
-#pragma mark - Universal Hierarchy Armor-Piercing & UI-Bot Logic
+#pragma mark - Universal Hierarchy Armor-Piercing & Native Bridge Engine
 
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
@@ -137,7 +137,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     
     if (isTiebaPBViewController(topVC)) return YES;
     
-    // Safety Net: Always authorize WAWebView so UI-Bot can take over
+    // Safety Net: Always authorize WAWebView so our Smart Native Bridge / UI-Bot can take over
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSString *vcClassStr = NSStringFromClass([topVC class]);
     if ([bundleID isEqualToString:@"com.tencent.xin"] && [vcClassStr containsString:@"WAWebView"]) {
@@ -157,12 +157,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 }
 
 // -------------------------------------------------------------
-// UI-BOT: Machine Vision Physical Touch Simulation
+// UI-BOT & NATIVE BRIDGE: WeChat Mini Program Engine
 // -------------------------------------------------------------
 
 + (BOOL)executeActionOnView:(UIView *)view {
     BOOL executed = NO;
-    // Method A: Standard UIControl Action Injection
     if ([view isKindOfClass:[UIControl class]]) {
         UIControl *control = (UIControl *)view;
         if (control.allTargets.count > 0) {
@@ -170,9 +169,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             executed = YES;
         }
     }
-    // Method B: Gesture Recognizer Hijacking (for custom components)
     for (UIGestureRecognizer *gr in view.gestureRecognizers) {
-        if ([gr isKindOfClass:[UITapGestureRecognizer class]]) {
+        // Broadly accept tap recognizers injected by Flutter/WeChat engine
+        if ([gr isKindOfClass:[UITapGestureRecognizer class]] || [NSStringFromClass([gr class]) containsString:@"Tap"]) {
             @try {
                 NSArray *targets = [gr valueForKey:@"targets"];
                 for (id targetObj in targets) {
@@ -192,72 +191,86 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return executed;
 }
 
-+ (BOOL)clickWeChatBackButton:(UIWindow *)window {
-    if (!window) return NO;
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
++ (UIView *)findWeChatCloseButtonInView:(UIView *)view {
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:view];
+    NSMutableArray *capsuleButtons = [NSMutableArray array];
+    
     while (queue.count > 0) {
-        UIView *view = queue.firstObject;
+        UIView *current = queue.firstObject;
         [queue removeObjectAtIndex:0];
         
-        if (view.hidden || view.alpha < 0.05) continue;
+        if (current.hidden || current.alpha < 0.05) continue;
         
-        NSString *cls = NSStringFromClass([view class]);
-        // Strict scanning for UIBarButton components
-        if ([cls containsString:@"Button"] || [cls containsString:@"BarItem"]) {
-            CGRect absFrame = [view convertRect:view.bounds toView:nil];
-            // Precision Targeting: Top-Left Corner Region
-            if (absFrame.origin.x <= 100 && absFrame.origin.y <= 120 && absFrame.size.width > 0) {
-                if ([self executeActionOnView:view]) {
-                    return YES;
-                }
-            }
+        NSString *cls = NSStringFromClass([current class]);
+        // Target the precise native capsule button class used in WAWebView
+        if ([cls isEqualToString:@"WACapsuleButton"]) {
+            [capsuleButtons addObject:current];
+        } else {
+            [queue addObjectsFromArray:current.subviews];
         }
-        [queue addObjectsFromArray:view.subviews];
     }
-    return NO;
+    
+    // The Capsule contains [...] and [ O ]. The [ O ] close button is always the right-most.
+    if (capsuleButtons.count > 0) {
+        [capsuleButtons sortUsingComparator:^NSComparisonResult(UIView *v1, UIView *v2) {
+            CGRect f1 = [v1 convertRect:v1.bounds toView:nil];
+            CGRect f2 = [v2 convertRect:v2.bounds toView:nil];
+            if (f1.origin.x < f2.origin.x) return NSOrderedAscending;
+            if (f1.origin.x > f2.origin.x) return NSOrderedDescending;
+            return NSOrderedSame;
+        }];
+        return capsuleButtons.lastObject; 
+    }
+    return nil;
 }
 
-+ (BOOL)clickWeChatCapsuleCloseButton:(UIWindow *)window {
-    if (!window) return NO;
-    CGFloat sWidth = window.bounds.size.width;
-    UIView *targetView = nil;
-    CGFloat maxX = -1;
-    
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
-    while (queue.count > 0) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
++ (void)executeWeChatMiniProgramBack:(UIViewController *)topVC window:(UIWindow *)window nav:(UINavigationController *)nav {
+    if (nav && nav.viewControllers.count > 1) {
+        // --- SUB-PAGE: Safely navigate back ONE level ---
+        // Dynamically invoke WeChat's native JS bridge controllers to prevent white screens.
+        NSArray *selectors = @[@"onClickBackBtn", @"onReturn", @"popWebView", @"goBack"];
+        for (NSString *selName in selectors) {
+            SEL sel = NSSelectorFromString(selName);
+            if ([topVC respondsToSelector:sel]) {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                [topVC performSelector:sel];
+                #pragma clang diagnostic pop
+                return;
+            }
+        }
+    } else {
+        // --- ROOT PAGE: Safely close the entire Mini Program ---
         
-        if (view.hidden || view.alpha < 0.05) continue;
+        // Strategy A: UI-Bot visually locates and physically clicks the Capsule [O] button
+        UIView *closeBtn = [self findWeChatCloseButtonInView:window];
+        if (closeBtn && [self executeActionOnView:closeBtn]) {
+            return;
+        }
         
-        NSString *cls = NSStringFromClass([view class]);
-        if ([cls containsString:@"Button"] || [cls containsString:@"Capsule"]) {
-            CGRect absFrame = [view convertRect:view.bounds toView:nil];
-            // Precision Targeting: Top-Right Corner Region
-            if (absFrame.origin.x >= sWidth - 150 && absFrame.origin.y <= 120 && absFrame.size.width > 0) {
-                BOOL isActionable = NO;
-                if ([view isKindOfClass:[UIControl class]] && ((UIControl *)view).allTargets.count > 0) isActionable = YES;
-                for (UIGestureRecognizer *gr in view.gestureRecognizers) {
-                    if ([gr isKindOfClass:[UITapGestureRecognizer class]]) isActionable = YES;
-                }
-                
-                // We lock onto the right-most interactive element in the capsule (the 'O' button)
-                if (isActionable) {
-                    if (absFrame.origin.x > maxX) {
-                        maxX = absFrame.origin.x;
-                        targetView = view;
+        // Strategy B: Native Controller Teardown
+        NSArray *selectors = @[@"onClickCloseBtn:", @"close", @"onClose"];
+        for (NSString *selName in selectors) {
+            SEL sel = NSSelectorFromString(selName);
+            if ([topVC respondsToSelector:sel]) {
+                NSMethodSignature *sig = [topVC methodSignatureForSelector:sel];
+                if (sig) {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setSelector:sel];
+                    [inv setTarget:topVC];
+                    if (sig.numberOfArguments == 3) { // usually expects `(id)sender`
+                        id nilObj = nil;
+                        [inv setArgument:&nilObj atIndex:2];
                     }
+                    [inv invoke];
+                    return;
                 }
             }
         }
-        [queue addObjectsFromArray:view.subviews];
     }
-    
-    if (targetView) {
-        return [self executeActionOnView:targetView];
-    }
-    return NO;
 }
+
+// -------------------------------------------------------------
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
     UIViewController *current = topVC;
@@ -288,8 +301,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *vcClassStr = NSStringFromClass([vc class]);
     
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
-        // ONLY block actual WeChat Mini Games (WAGame).
-        // WAWebView is unleashed and handled via UI-Bot.
+        // Block actual WeChat Mini Games (WAGame).
         if ([vcClassStr containsString:@"WAGame"]) {
             return YES;
         }
@@ -297,6 +309,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
+// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
@@ -549,23 +562,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                     [self forcePortraitOrientation];
                 } else {
                     
-                    // UI-BOT TAKEOVER FOR WECHAT MINI PROGRAMS
+                    // WECHAT SKYLINE/FLUTTER NATIVE BRIDGE OVERRIDE
                     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
                     if ([bundleID isEqualToString:@"com.tencent.xin"] && [NSStringFromClass([topVC class]) containsString:@"WAWebView"]) {
-                        BOOL executed = NO;
-                        if (nav && nav.viewControllers.count > 1) {
-                            // Sub-page: Target the Navigation Back Button (<)
-                            executed = [LeftPanWindowHelper clickWeChatBackButton:self.window];
-                        } else {
-                            // Root-page: Target the Capsule Close Button (O)
-                            executed = [LeftPanWindowHelper clickWeChatCapsuleCloseButton:self.window];
-                        }
-                        
-                        // CRITICAL: If the bot fails to find the button, DO NOT fallback to popViewController!
-                        // Forcing a pop on the JS Engine guarantees a white-screen deadlock. 
-                        // It is infinitely safer to silently fail and let the user tap the physical button.
-                        if (executed) return;
-                        return; // Silent abort
+                        [LeftPanWindowHelper executeWeChatMiniProgramBack:topVC window:self.window nav:nav];
+                        return; // Halt immediately. DO NOT call standard native pop to avoid white screens!
                     }
                     
                     [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
