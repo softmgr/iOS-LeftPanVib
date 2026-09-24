@@ -181,15 +181,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     
     // WeChat Specific Rules
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
+        // Only block actual WeChat Mini Programs (WAWebView) and Mini Games (WAGame)
+        // BaseMsgContent has been removed from this list to allow normal chat views to swipe back.
         if ([vcClassStr containsString:@"WAWebView"] || 
-            [vcClassStr containsString:@"WAGame"] || 
-            [vcClassStr containsString:@"BaseMsgContent"]) {
+            [vcClassStr containsString:@"WAGame"]) {
             return YES;
         }
     }
     return NO;
 }
 
+// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
@@ -269,6 +271,54 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     });
 }
 
+#pragma mark - Debug Information Dumper
+
+#if ENABLE_DEBUG_LOGGING
++ (NSString *)dumpViewHierarchy:(UIView *)view depth:(int)depth maxDepth:(int)maxDepth {
+    if (!view || depth > maxDepth) return @"";
+    NSMutableString *result = [NSMutableString string];
+    NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
+    
+    CGRect f = view.frame;
+    [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
+    
+    for (UIView *sub in view.subviews) {
+        [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
+    }
+    return result;
+}
+
++ (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
+    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG ===\n"];
+    [log appendFormat:@"Time: %@\n", [NSDate date]];
+    [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
+    [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
+    
+    [log appendFormat:@"\n[Controllers]\n"];
+    [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
+    if (topVC.parentViewController) {
+        [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
+    }
+    
+    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
+    [log appendFormat:@"ValidNavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
+    
+    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
+    if (topVC && topVC.view) {
+        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
+    }
+    
+    [log appendString:@"=====================\n"];
+    
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    pasteboard.string = log;
+    
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
+    [feedback prepare];
+    [feedback impactOccurred];
+}
+#endif
+
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
@@ -289,16 +339,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     
     if (pan.state == UIGestureRecognizerStateBegan) {
         
+#if ENABLE_DEBUG_LOGGING
+        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
+#endif
+        
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Global Safety Net & Tieba Isolation:
-            // 1. Force Fallback Mode for known toxic transitions (Huya, Tieba PBViews).
-            // 2. If the app explicitly disabled the native gesture (isEnabled == NO), 
-            //    forcing the transition engine will likely freeze the state machine on cancellation.
-            //    We respect their lock by downgrading to Fallback Mode, which pops safely on release.
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
                 self.useFallbackMode = YES;
             } else {
@@ -336,9 +385,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                         [coordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
                             if (![context isCancelled]) {
 #ifndef DISABLE_VIBRATION
+                                #if !ENABLE_DEBUG_LOGGING
                                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                                 [feedback prepare];
                                 [feedback impactOccurred];
+                                #endif
 #endif
                             }
                         }];
@@ -373,14 +424,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
+                #if !ENABLE_DEBUG_LOGGING
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback prepare];
                 [feedback impactOccurred];
+                #endif
 #endif
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
-                    // Safe execution route that strictly bypasses interactive transition freezes
                     [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
                 }
             });
