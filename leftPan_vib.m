@@ -94,7 +94,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return self;
 }
 
-#pragma mark - Universal Hierarchy Armor-Piercing & UI-Bot Algorithm
+#pragma mark - Universal Hierarchy Armor-Piercing Algorithm
 
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
@@ -136,13 +136,20 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
-    // Safety Net: Always authorize gesture for highly customized architectures to engage Fallback Mode
+    // Safety Net 1: Always authorize gesture for highly customized Tieba PBViews
     if (isTiebaPBViewController(topVC)) return YES;
     
+    // Safety Net 2: WeChat Mini Program (WAWebView) Root Protection
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSString *vcClassStr = NSStringFromClass([topVC class]);
     if ([bundleID isEqualToString:@"com.tencent.xin"] && [vcClassStr containsString:@"WAWebView"]) {
-        return YES; // Allow WeChat Mini Programs to engage our Smart UI-Bot
+        UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
+        if (!nav || nav.viewControllers.count <= 1) {
+            // Natively, WeChat Mini Programs cannot be closed via edge swipe at the root.
+            // Forcefully dismissing the root container breaks their internal JS Engine, causing White Screens!
+            // Therefore, we strictly prohibit the gesture on the root page.
+            return NO; 
+        }
     }
     
     UIViewController *current = topVC;
@@ -157,107 +164,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// UI-Bot Logic 1: Find and programmatically tap the physical back button (<) in the top-left area
-+ (BOOL)simulatePhysicalBackButtonTap:(UIView *)view depth:(int)depth {
-    if (!view || depth > 12) return NO;
-    if (view.hidden || view.alpha < 0.05) return NO;
-    
-    if ([view isKindOfClass:[UIControl class]]) {
-        UIControl *control = (UIControl *)view;
-        NSString *className = NSStringFromClass([view class]);
-        // Strict safety net: MUST be a button with executable actions
-        if (control.allTargets.count > 0 || [className containsString:@"Button"]) {
-            UIWindow *window = view.window;
-            if (window) {
-                CGRect absFrame = [control convertRect:control.bounds toView:nil];
-                // Strict Bounding Box for Top-Left Navigation Back Button
-                if (absFrame.origin.x >= 0 && absFrame.origin.x <= 80 && 
-                    absFrame.origin.y >= 0 && absFrame.origin.y <= 120 && 
-                    absFrame.size.width >= 10 && absFrame.size.height >= 10 && 
-                    absFrame.size.width <= 150) {
-                    
-                    [control sendActionsForControlEvents:UIControlEventTouchUpInside];
-                    return YES;
-                }
-            }
-        }
-    }
-    for (UIView *subview in view.subviews) {
-        if ([self simulatePhysicalBackButtonTap:subview depth:depth + 1]) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-// UI-Bot Logic 2: Find and programmatically tap the capsule Close button (O) in the top-right area
-+ (BOOL)simulateCapsuleCloseButtonTap:(UIView *)view depth:(int)depth {
-    if (!view || depth > 12) return NO;
-    if (view.hidden || view.alpha < 0.05) return NO;
-    
-    if ([view isKindOfClass:[UIControl class]]) {
-        UIControl *control = (UIControl *)view;
-        NSString *className = NSStringFromClass([view class]);
-        if (control.allTargets.count > 0 || [className containsString:@"Button"]) {
-            UIWindow *window = view.window;
-            if (window) {
-                CGRect absFrame = [control convertRect:control.bounds toView:nil];
-                CGFloat sWidth = window.bounds.size.width;
-                // Strict Bounding Box for Top-Right Capsule Close Button (Right-most button)
-                if (absFrame.origin.x >= sWidth - 70 && absFrame.origin.x <= sWidth && 
-                    absFrame.origin.y >= 0 && absFrame.origin.y <= 120 && 
-                    absFrame.size.width >= 10 && absFrame.size.width <= 100) {
-                    
-                    [control sendActionsForControlEvents:UIControlEventTouchUpInside];
-                    return YES;
-                }
-            }
-        }
-    }
-    for (UIView *subview in view.subviews) {
-        if ([self simulateCapsuleCloseButtonTap:subview depth:depth + 1]) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    BOOL isWeChat = [bundleID isEqualToString:@"com.tencent.xin"];
-
-    // ---------------------------------------------------------
-    // Phase 1: Ultimate Defense Against Web/Flutter White Screens
-    // Native pops corrupt JS bridge lifecycles. We dispatch our UI-Bot instead.
-    // ---------------------------------------------------------
-    if (isWeChat && [NSStringFromClass([topVC class]) containsString:@"WAWebView"]) {
-        UIWindow *window = topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
-        
-        // Priority A: Penetrate the DOM and click the native Left Back Button
-        if ([self simulatePhysicalBackButtonTap:window depth:0]) {
-            return;
-        }
-        
-        // Priority B: If at root, penetrate and click the Capsule Close Button
-        UINavigationController *validNav = [self findValidNavigationControllerFor:topVC];
-        if (!validNav || validNav.viewControllers.count <= 1) {
-            if ([self simulateCapsuleCloseButtonTap:window depth:0]) {
-                return;
-            }
-        }
-        
-        // Priority C: Graceful Delegate Interception Request
-        if (validNav && validNav.navigationBar.delegate && [validNav.navigationBar.delegate respondsToSelector:@selector(navigationBar:shouldPopItem:)]) {
-            if (![validNav.navigationBar.delegate navigationBar:validNav.navigationBar shouldPopItem:validNav.navigationBar.topItem]) {
-                return; // Politely let WeChat's internal engine handle the pop natively
-            }
-        }
-    }
-    
-    // ---------------------------------------------------------
-    // Phase 2: Standard Armor-Piercing Algorithm
-    // Brutally tears down layers to reach the core navigation stack
-    // ---------------------------------------------------------
     UIViewController *current = topVC;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) {
@@ -286,7 +193,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *vcClassStr = NSStringFromClass([vc class]);
     
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
-        // ONLY block actual WeChat Mini Games (WAGame).
+        // ONLY block actual WeChat Mini Games (WAGame) to protect native gameplay.
         // Standard Mini Programs (WAWebView) and Chats (BaseMsgContent) are completely unleashed.
         if ([vcClassStr containsString:@"WAGame"]) {
             return YES;
@@ -457,11 +364,10 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-            BOOL isWeChatMiniProgram = [bundleID isEqualToString:@"com.tencent.xin"] && [NSStringFromClass([topVC class]) containsString:@"WAWebView"];
-            
-            // Force Fallback for critical apps to deploy UI-Bot or brute-force pops seamlessly.
-            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isWeChatMiniProgram) {
+            // Only force Fallback for apps that natively break/block system gesture handlers (Huya, Tieba).
+            // WeChat Mini Program sub-pages are purposely NOT forced into Fallback Mode here,
+            // so they can safely utilize WeChat's internal interactivePopGestureRecognizer to sync their JS engine state.
+            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
