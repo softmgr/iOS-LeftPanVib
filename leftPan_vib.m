@@ -21,7 +21,7 @@
 #define kLPVFallbackMinFlickTranslation 20.0         
 
 static char kWindowHelperKey;
-static NSInteger sAmapMethodIndex = 0; // Round-robin counter for Amap probe
+static NSInteger sAmapMethodIndex = 0; // Round-robin counter for Amap navigation probe
 
 #pragma mark - Special App Whitelist
 
@@ -45,7 +45,6 @@ static BOOL isSpecialApp_Amap(void) {
     return isAmap;
 }
 
-// Identify Baidu Tieba's custom Post Detail (PB) View Controllers
 static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -174,7 +173,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if ([self isAmapHomePage:win ?: topVC.view]) {
             return NO; // Strictly suppress on main map screen
         }
-        return YES; // Allow in subpages
+        return YES; // Allow in subpages and navigation
     }
     
     UIViewController *current = topVC;
@@ -189,209 +188,133 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Amap Round-Robin Execution Engine
+#pragma mark - Amap Precision Touch Probing Engine
 
-+ (CGPoint)calculateTopLeftBackButtonPoint:(UIWindow *)window {
-    CGFloat safeTop = 20.0;
++ (CGFloat)getSafeAreaTop:(UIWindow *)window {
     if (@available(iOS 11.0, *)) {
         if (window && window.safeAreaInsets.top > 0) {
-            safeTop = window.safeAreaInsets.top;
+            return window.safeAreaInsets.top;
         }
     }
-    // Vertical center of the standard 44pt navigation bar
-    return CGPointMake(25.0, safeTop + 22.0);
+    return 20.0;
+}
+
++ (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
+    UIView *hit = [window hitTest:pt withEvent:nil];
+    if (hit) {
+        [hit touchesBegan:[NSSet set] withEvent:nil];
+        [hit touchesEnded:[NSSet set] withEvent:nil];
+    }
+}
+
++ (UIView *)findViewWithKeywords:(NSArray<NSString *> *)keywords inView:(UIView *)root targetWin:(UIWindow *)targetWin foundText:(NSString **)outText {
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        
+        if (v.hidden || v.alpha < 0.05) continue;
+        
+        // 1. Check -text property (AJXLabel, UILabel, etc.)
+        if ([v respondsToSelector:@selector(text)]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id txt = [v performSelector:@selector(text)];
+            #pragma clang diagnostic pop
+            if ([txt isKindOfClass:[NSString class]]) {
+                for (NSString *kw in keywords) {
+                    if ([(NSString *)txt containsString:kw]) {
+                        if (outText) *outText = (NSString *)txt;
+                        return v;
+                    }
+                }
+            }
+        }
+        
+        // 2. Check accessibilityLabel
+        if (v.accessibilityLabel) {
+            for (NSString *kw in keywords) {
+                if ([v.accessibilityLabel containsString:kw]) {
+                    if (outText) *outText = v.accessibilityLabel;
+                    return v;
+                }
+            }
+        }
+        
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return nil;
 }
 
 + (void)probeAmapReturnMethods:(UIViewController *)topVC window:(UIWindow *)window {
     NSInteger methodId = sAmapMethodIndex % 4;
     sAmapMethodIndex++;
 
+    UIWindow *targetWin = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
+    CGFloat screenW = targetWin.bounds.size.width;
+    CGFloat screenH = targetWin.bounds.size.height;
+    CGFloat safeTop = [self getSafeAreaTop:targetWin];
+
     NSMutableString *log = [NSMutableString stringWithFormat:@"=== LPV AMAP PROBE [Method #%ld] ===\n", (long)methodId];
     [log appendFormat:@"Time: %@\n", [NSDate date]];
-    [log appendFormat:@"TopVC: %@\n", NSStringFromClass([topVC class])];
-    
-    UIWindow *targetWin = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
-    CGPoint pt = [self calculateTopLeftBackButtonPoint:targetWin];
+    [log appendFormat:@"Screen: {%.0f, %.0f}, SafeTop: %.0f\n", screenW, screenH, safeTop];
 
     switch (methodId) {
         case 0: {
-            [log appendFormat:@"Name: HitTest Gesture Trigger\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
+            // Proven Method #1 from V56: Top-Left Standard Back
+            CGPoint pt = CGPointMake(25.0, safeTop + 22.0);
+            [log appendFormat:@"Mode: Top-Left Header Back (Settings/Subpage Base)\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
             UIView *hit = [targetWin hitTest:pt withEvent:nil];
             [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
-            
-            BOOL triggered = NO;
-            UIView *curr = hit;
-            int level = 0;
-            while (curr && level < 6) {
-                for (UIGestureRecognizer *gr in curr.gestureRecognizers) {
-                    if ([gr isKindOfClass:[UITapGestureRecognizer class]] || [NSStringFromClass([gr class]) containsString:@"Tap"]) {
-                        @try {
-                            NSArray *targets = [gr valueForKey:@"targets"];
-                            for (id targetObj in targets) {
-                                id target = [targetObj valueForKey:@"target"];
-                                SEL action = NSSelectorFromString([targetObj valueForKey:@"action"]);
-                                if (target && [target respondsToSelector:action]) {
-                                    #pragma clang diagnostic push
-                                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                                    [target performSelector:action withObject:gr];
-                                    #pragma clang diagnostic pop
-                                    [log appendFormat:@"Fired Gesture: %@ -> %s\n", NSStringFromClass([target class]), sel_getName(action)];
-                                    triggered = YES;
-                                }
-                            }
-                        } @catch (NSException *e) {
-                            [log appendFormat:@"Gesture exception: %@\n", e.reason];
-                        }
-                    }
-                }
-                curr = curr.superview;
-                level++;
-            }
-            [log appendFormat:@"Result: %@\n", triggered ? @"Dispatched Gesture" : @"No Tap Gesture Found"];
+            [self dispatchTouchToWindow:targetWin atPoint:pt];
+            [log appendString:@"Dispatched touchesBegan/touchesEnded\n"];
             break;
         }
         case 1: {
-            [log appendFormat:@"Name: HitTest UIControl / Touch Dispatch\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
+            // Navigation Bottom-Right Exit Button
+            CGPoint pt = CGPointMake(screenW - 50.0, screenH - 48.0);
+            [log appendFormat:@"Mode: Navigation Bottom-Right Exit\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
             UIView *hit = [targetWin hitTest:pt withEvent:nil];
             [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
-            
-            BOOL triggered = NO;
-            UIView *curr = hit;
-            int level = 0;
-            while (curr && level < 6) {
-                if ([curr isKindOfClass:[UIControl class]]) {
-                    UIControl *c = (UIControl *)curr;
-                    [c sendActionsForControlEvents:UIControlEventTouchUpInside];
-                    [log appendFormat:@"Fired UIControl: %@\n", NSStringFromClass([c class])];
-                    triggered = YES;
-                    break;
-                }
-                curr = curr.superview;
-                level++;
-            }
-            if (!triggered && hit) {
-                // Direct touch lifecycle invocation
-                [hit touchesBegan:[NSSet set] withEvent:nil];
-                [hit touchesEnded:[NSSet set] withEvent:nil];
-                [log appendString:@"Dispatched touchesBegan/touchesEnded to hitView\n"];
-            }
+            [self dispatchTouchToWindow:targetWin atPoint:pt];
+            [log appendString:@"Dispatched touchesBegan/touchesEnded\n"];
             break;
         }
         case 2: {
-            [log appendString:@"Name: Amap Engine Singletons (LTMPageManager / AJXRouter / NMPageLifeCycle)\n"];
-            BOOL called = NO;
-            
-            // 2.1 LTMPageManager
-            Class ltmClass = NSClassFromString(@"LTMPageManager");
-            if (ltmClass) {
-                id mgr = [ltmClass respondsToSelector:@selector(sharedInstance)] ? [ltmClass performSelector:@selector(sharedInstance)] : nil;
-                if (!mgr && [ltmClass respondsToSelector:@selector(defaultManager)]) {
-                    mgr = [ltmClass performSelector:@selector(defaultManager)];
-                }
-                if (mgr) {
-                    SEL popAnimSel = NSSelectorFromString(@"popPageAnimated:");
-                    if ([mgr respondsToSelector:popAnimSel]) {
-                        NSMethodSignature *sig = [mgr methodSignatureForSelector:popAnimSel];
-                        if (sig && sig.numberOfArguments == 3) {
-                            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                            [inv setSelector:popAnimSel];
-                            [inv setTarget:mgr];
-                            BOOL arg = YES;
-                            [inv setArgument:&arg atIndex:2];
-                            [inv invoke];
-                            [log appendString:@"Invoked: [LTMPageManager popPageAnimated:YES]\n"];
-                            called = YES;
-                        }
-                    }
-                    if (!called) {
-                        for (NSString *s in @[@"popPage", @"goBack", @"dismissPage", @"closePage"]) {
-                            SEL sel = NSSelectorFromString(s);
-                            if ([mgr respondsToSelector:sel]) {
-                                #pragma clang diagnostic push
-                                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                                [mgr performSelector:sel];
-                                #pragma clang diagnostic pop
-                                [log appendFormat:@"Invoked: [LTMPageManager %@]\n", s];
-                                called = YES;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // 2.2 AJXRouter
-            if (!called) {
-                Class ajxRouter = NSClassFromString(@"AJXRouter");
-                if (ajxRouter) {
-                    for (NSString *s in @[@"pop", @"goBack", @"back"]) {
-                        SEL sel = NSSelectorFromString(s);
-                        if ([ajxRouter respondsToSelector:sel]) {
-                            #pragma clang diagnostic push
-                            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                            [ajxRouter performSelector:sel];
-                            #pragma clang diagnostic pop
-                            [log appendFormat:@"Invoked: [AJXRouter %@]\n", s];
-                            called = YES;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // 2.3 NMPageLifeCycle
-            if (!called) {
-                Class plcClass = NSClassFromString(@"NMPageLifeCycle");
-                if (plcClass && [plcClass respondsToSelector:@selector(sharedInstance)]) {
-                    id plc = [plcClass performSelector:@selector(sharedInstance)];
-                    if (plc && [plc respondsToSelector:NSSelectorFromString(@"goBack")]) {
-                        #pragma clang diagnostic push
-                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                        [plc performSelector:NSSelectorFromString(@"goBack")];
-                        #pragma clang diagnostic pop
-                        [log appendString:@"Invoked: [NMPageLifeCycle goBack]\n"];
-                        called = YES;
-                    }
-                }
-            }
-            [log appendFormat:@"Result: %@\n", called ? @"Called engine singleton" : @"No matching engine singleton"];
+            // Navigation Bottom-Left Exit Button
+            CGPoint pt = CGPointMake(50.0, screenH - 48.0);
+            [log appendFormat:@"Mode: Navigation Bottom-Left Exit\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
+            UIView *hit = [targetWin hitTest:pt withEvent:nil];
+            [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
+            [self dispatchTouchToWindow:targetWin atPoint:pt];
+            [log appendString:@"Dispatched touchesBegan/touchesEnded\n"];
             break;
         }
         case 3: {
-            [log appendString:@"Name: Controller Selectors & AMNavigationController Pop\n"];
-            BOOL called = NO;
+            // Semantic Text Hunter for Exit/Back Keywords
+            [log appendString:@"Mode: Semantic Text Hunter\n"];
+            NSString *matchedText = nil;
+            NSArray *keywords = @[@"退出", @"结束", @"返回", @"取消"];
+            UIView *foundView = [self findViewWithKeywords:keywords inView:targetWin targetWin:targetWin foundText:&matchedText];
             
-            // 3.1 Direct selectors on GDMapViewController
-            for (NSString *s in @[@"goBack", @"onBack", @"pageBack", @"dismissPage", @"popPage", @"onBackBtnClicked", @"back"]) {
-                SEL sel = NSSelectorFromString(s);
-                if ([topVC respondsToSelector:sel]) {
-                    #pragma clang diagnostic push
-                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                    [topVC performSelector:sel];
-                    #pragma clang diagnostic pop
-                    [log appendFormat:@"Invoked on TopVC: [%@ %@]\n", NSStringFromClass([topVC class]), s];
-                    called = YES;
-                    break;
-                }
+            if (foundView) {
+                CGRect absRect = [foundView convertRect:foundView.bounds toView:targetWin];
+                CGPoint centerPt = CGPointMake(CGRectGetMidX(absRect), CGRectGetMidY(absRect));
+                [log appendFormat:@"Found Text: \"%@\" in View: %@\nAt Center: {%.1f, %.1f}\n", matchedText, NSStringFromClass([foundView class]), centerPt.x, centerPt.y];
+                [self dispatchTouchToWindow:targetWin atPoint:centerPt];
+                [log appendString:@"Dispatched touchesBegan/touchesEnded to matched text center\n"];
+            } else {
+                // Fallback: Top-Right Close Button
+                CGPoint pt = CGPointMake(screenW - 30.0, safeTop + 22.0);
+                [log appendFormat:@"No matching keywords found. Fallback to Top-Right Close {%.1f, %.1f}\n", pt.x, pt.y];
+                [self dispatchTouchToWindow:targetWin atPoint:pt];
+                [log appendString:@"Dispatched touchesBegan/touchesEnded to Top-Right\n"];
             }
-            
-            // 3.2 AMNavigationController pop bypass
-            if (!called && topVC.navigationController) {
-                [topVC.navigationController popViewControllerAnimated:YES];
-                [log appendString:@"Invoked: [topVC.navigationController popViewControllerAnimated:YES]\n"];
-                called = YES;
-            } else if (!called && [topVC.parentViewController isKindOfClass:[UINavigationController class]]) {
-                [(UINavigationController *)topVC.parentViewController popViewControllerAnimated:YES];
-                [log appendString:@"Invoked: [(UINavigationController *)parent popViewControllerAnimated:YES]\n"];
-                called = YES;
-            }
-            [log appendFormat:@"Result: %@\n", called ? @"Dispatched VC action" : @"No VC selector found"];
             break;
         }
     }
-    
+
     [log appendString:@"=====================================\n"];
-    
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     pasteboard.string = log;
 }
@@ -448,7 +371,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if ([viewClassStr containsString:@"Unity"] || 
         [viewClassStr containsString:@"EAGL"] || 
         [viewClassStr containsString:@"MTKView"] || 
-        [viewClassStr containsString:@"FMetalView"] ||
+        [viewClassStr containsString:@"FMetalView"] || 
         [viewClassStr containsString:@"XRNativeGame"] ||
         [viewClassStr containsString:@"OpenGL"]) {
         return YES;
