@@ -11,7 +11,7 @@
 // ---------------------------------------------------------
 #define kLPVPortraitZoneRatio (4.0 / 5.0)        
 #define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
-#define kLPVLandscapeZoneWidth 110.0             
+#define kLPVLandscapeZoneWidth 50.0              
 #define kLPVGestureStartVelocityThreshold -40.0
 #define kLPVPortraitSuccessTranslationRatio 0.35     
 #define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
@@ -186,7 +186,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Generic framework detection: Identifies Flutter subpages containing PlatformView/Video layers
 + (BOOL)isFlutterSubpageActive:(UIViewController *)topVC {
     if (!topVC || ![topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) return NO;
     UIView *fView = topVC.view;
@@ -211,11 +210,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
     if (!topVC) return NO;
 
-    // Generic Flutter Framework Introspection (Zero bundle ID dependency)
+    // Generic Flutter Framework Introspection
     if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         if (isLandscape) {
-            // In landscape mode, Flutter video players use dual-axis touch controls (scrubbing/volume).
-            // Yield control entirely to the player.
             return NO;
         }
         return [self isFlutterSubpageActive:topVC];
@@ -1172,7 +1169,7 @@ static void lockRNOrientationToPortrait(void) {
 
     CGPoint rawVel = [self.pan rawVelocityInView:self.pan.view];
     if (rawVel.x >= kLPVGestureStartVelocityThreshold) return NO;
-    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.1) return NO;
+    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) return NO;
 
     if (![LeftPanWindowHelper canGoBack:topVC window:window isLandscape:isLandscape]) {
         return NO;
