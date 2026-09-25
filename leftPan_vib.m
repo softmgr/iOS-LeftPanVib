@@ -4,7 +4,7 @@
 // =========================================================
 // DEBUG SWITCH: Set to 1 to enable Full Hierarchy Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 0
+#define ENABLE_DEBUG_LOGGING 1
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -76,6 +76,18 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
+}
+
+// Block and cancel any competing player gestures (e.g. video scrub/progress bars)
+- (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)preventedGestureRecognizer {
+    if ([preventedGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)preventingGestureRecognizer {
+    return NO;
 }
 @end
 
@@ -186,6 +198,28 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
+// Precision check for Flutter-based video subpages vs. root pages
++ (BOOL)isFlutterSubpageActive:(UIViewController *)topVC {
+    if (!topVC || ![topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) return NO;
+    UIView *fView = topVC.view;
+    if (!fView) return NO;
+
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:fView];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        NSString *cls = NSStringFromClass([v class]);
+        if ([cls containsString:@"ChildClippingView"] || 
+            [cls containsString:@"TouchIntercepting"] || 
+            [cls containsString:@"PlatformView"] ||
+            [cls containsString:@"Video"]) {
+            return YES;
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return NO;
+}
+
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
     if (isLandscape) return YES;
     if (!topVC) return NO;
@@ -198,6 +232,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             return NO; 
         }
         return YES; 
+    }
+    
+    // Flutter SPA routing detector
+    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
+        return [self isFlutterSubpageActive:topVC];
     }
     
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
@@ -341,7 +380,6 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
         
         CGRect r = [v convertRect:v.bounds toView:window];
         
-        // Match specific small button bounds in upper-left corner
         if (r.origin.x >= 15.0 && r.origin.x <= 130.0 &&
             r.origin.y >= 20.0 && r.origin.y <= 160.0 &&
             r.size.width >= 18.0 && r.size.width <= 85.0 &&
@@ -401,7 +439,6 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
         curr = curr.superview;
     }
 
-    // React Native TouchHandler Dispatch
     UIGestureRecognizer *touchHandler = nil;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
     while (queue.count > 0) {
@@ -508,7 +545,7 @@ static void lockRNOrientationToPortrait(void) {
     }
 }
 
-// Container-Immune View Fitting Engine: Never resizes root screen/layout containers!
+// Container-Immune View Fitting Engine: Preserves layout containers, adapts only videos and controls
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -521,18 +558,17 @@ static void lockRNOrientationToPortrait(void) {
 
         NSString *cls = NSStringFromClass([v class]);
         
-        // CRITICAL IMMUNITY SHIELD: Completely skip layout and container nodes
+        // Immunity Shield: Never constrain root screens or layout scrollers
         if ([cls containsString:@"Window"] || [cls containsString:@"Transition"] || 
             [cls containsString:@"Layout"] || [cls containsString:@"Screen"] || 
             [cls containsString:@"Root"] || [cls containsString:@"Scroll"] || 
-            [cls containsString:@"Provider"] || [cls containsString:@"Navigation"]) {
+            [cls containsString:@"Provider"] || [cls containsString:@"Navigation"] ||
+            [cls containsString:@"Flutter"]) {
             [queue addObjectsFromArray:v.subviews];
             continue;
         }
 
         CGRect f = v.frame;
-
-        // 1. Constrain video player containers only (leaves screen containers intact)
         BOOL isVideoView = [cls containsString:@"Video"] || [cls containsString:@"Player"] || [cls containsString:@"IJK"];
         if (isVideoView && f.size.width > targetW + 5.0) {
             CGFloat newW = targetW;
@@ -546,7 +582,6 @@ static void lockRNOrientationToPortrait(void) {
             [v layoutIfNeeded];
         }
 
-        // 2. Right-Edge Magnetic Snap: Pull subviews floating off-screen back to visible edge (for controls)
         if (!isVideoView && f.origin.x + f.size.width > targetW + 2.0 && f.size.width < targetW && f.size.width > 10.0) {
             CGFloat newX = targetW - f.size.width - 12.0;
             if (newX < 0) newX = 0;
@@ -749,6 +784,23 @@ static void lockRNOrientationToPortrait(void) {
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
+    // Flutter SPA Navigation Popping
+    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
+        if ([topVC respondsToSelector:NSSelectorFromString(@"popRoute")]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [topVC performSelector:NSSelectorFromString(@"popRoute")];
+            #pragma clang diagnostic pop
+        }
+        UIWindow *win = topVC.view.window ?: [self resolveKeyWindow];
+        if (win) {
+            CGFloat safeTop = [self getSafeAreaTop:win];
+            CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
+            [self dispatchTouchToWindow:win atPoint:ptTopLeft];
+        }
+        return;
+    }
+
     UIViewController *current = topVC;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) {
@@ -814,7 +866,6 @@ static void lockRNOrientationToPortrait(void) {
 
 // Anti-Bounce Force Rotation Engine
 - (void)forcePortraitOrientation {
-    // 1. Enter strict Portrait-Only lock state
     g_forceAllowPortrait = YES;
     lockRNOrientationToPortrait();
 
@@ -824,7 +875,6 @@ static void lockRNOrientationToPortrait(void) {
         if (self.window.rootViewController) [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
     }
 
-    // 2. Invocation-based private orientation assignment
     @try {
         SEL setOriSel = NSSelectorFromString(@"setOrientation:");
         if ([[UIDevice currentDevice] respondsToSelector:setOriSel]) {
@@ -847,7 +897,6 @@ static void lockRNOrientationToPortrait(void) {
 
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
 
-    // 3. Modern WindowScene Geometry Request
     if (@available(iOS 16.0, *)) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
@@ -865,11 +914,9 @@ static void lockRNOrientationToPortrait(void) {
         [UIViewController attemptRotationToDeviceOrientation];
     }
 
-    // 4. Initial bridge notification
     UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
     notifyReactNativeOrientationBridge(win);
 
-    // 5. Single Settled Stage (0.35s - after rotation finishes):
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindow *currWin = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
         if (currWin) {
@@ -885,7 +932,6 @@ static void lockRNOrientationToPortrait(void) {
 
             notifyReactNativeOrientationBridge(currWin);
 
-            // Tap verified exit button if present
             UIView *targetBtn = [LeftPanWindowHelper findActualPlayerBackButton:currWin window:currWin];
             if (targetBtn) {
                 [LeftPanWindowHelper simulateTapOnVerifiedView:targetBtn inWindow:currWin];
@@ -897,7 +943,6 @@ static void lockRNOrientationToPortrait(void) {
         }
     });
 
-    // 6. Hold portrait lock for 2.0s to completely suppress gravity accelerometer bounce-back
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         g_forceAllowPortrait = NO;
         if (@available(iOS 16.0, *)) {
@@ -961,33 +1006,59 @@ static void lockRNOrientationToPortrait(void) {
 
 #pragma mark - Gesture & Haptic Handling
 
+// Cancel competing player scrub/drag gestures immediately when return swipe begins
+static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer *activePan) {
+    if (!rootView) return;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+            if (gr != activePan && gr.isEnabled) {
+                if ([gr isKindOfClass:[UIPanGestureRecognizer class]] ||
+                    [gr isKindOfClass:[UISwipeGestureRecognizer class]] ||
+                    [NSStringFromClass([gr class]) containsString:@"Pan"] ||
+                    [NSStringFromClass([gr class]) containsString:@"Swipe"]) {
+                    gr.enabled = NO;
+                    gr.enabled = YES;
+                }
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+}
+
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
 
     UIWindow *window = pan.view.window ?: self.window;
-    BOOL isLandscape = NO;
+    BOOL isSystemLandscape = NO;
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
-        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+        isSystemLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
     } else {
-        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+        isSystemLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
 #pragma clang diagnostic pop
 
+    BOOL isAnyLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
+
     if (pan.state == UIGestureRecognizerStateBegan) {
+        // Freeze and cancel video scrubbing gestures in the player immediately
+        cancelCompetingGesturesInView(window, pan);
 
 #if ENABLE_DEBUG_LOGGING
-        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
+        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isAnyLandscape];
 #endif
 
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        if (nav && !isLandscape) {
+        if (nav && !isAnyLandscape) {
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
@@ -1038,7 +1109,7 @@ static void lockRNOrientationToPortrait(void) {
             });
         }
     } else {
-        [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC];
+        [self handleFallbackPan:pan isLandscape:isAnyLandscape topVC:topVC];
     }
 }
 
@@ -1071,8 +1142,17 @@ static void lockRNOrientationToPortrait(void) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
+                    BOOL videoHandled = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
+
+                    if (!videoHandled && !isSpecialApp_Amap()) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+                            if (win && win.bounds.size.width > win.bounds.size.height) {
+                                [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
+                            }
+                        });
+                    }
                 } else {
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
@@ -1095,16 +1175,19 @@ static void lockRNOrientationToPortrait(void) {
 #endif
 
     UIWindow *window = self.pan.view.window ?: self.window;
-    BOOL isLandscape = NO;
+    BOOL isSystemLandscape = NO;
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
-        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+        isSystemLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
     } else {
-        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+        isSystemLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
 #pragma clang diagnostic pop
+
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    BOOL isLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
 
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
@@ -1119,8 +1202,6 @@ static void lockRNOrientationToPortrait(void) {
             return NO;
         }
     }
-
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
         return NO;
@@ -1149,23 +1230,15 @@ static void lockRNOrientationToPortrait(void) {
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    if (gestureRecognizer == self.pan) {
-        if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
-            return NO;
-        }
+    // Never yield or wait for other gesture recognizers
+    return NO;
+}
 
-#if ENABLE_DEBUG_LOGGING
-        return YES;
-#endif
-        return YES;
-    }
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     return NO;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-#if ENABLE_DEBUG_LOGGING
-    return YES;
-#endif
     return NO;
 }
 
