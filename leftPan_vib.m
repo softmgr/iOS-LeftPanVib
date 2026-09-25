@@ -4,7 +4,7 @@
 // =========================================================
 // DEBUG SWITCH: Set to 1 to enable Full Hierarchy Logging, 0 for Release
 // =========================================================
-#define ENABLE_DEBUG_LOGGING 1
+#define ENABLE_DEBUG_LOGGING 0
 
 // ---------------------------------------------------------
 // CONFIGURATION (Constants for easy maintenance)
@@ -59,7 +59,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Clean Custom Gesture Recognizer (Restored to v79)
+#pragma mark - Custom Gesture Recognizer
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
 - (CGPoint)rawVelocityInView:(UIView *)view;
@@ -186,6 +186,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
+// Generic framework detection: Identifies Flutter subpages containing PlatformView/Video layers
 + (BOOL)isFlutterSubpageActive:(UIViewController *)topVC {
     if (!topVC || ![topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) return NO;
     UIView *fView = topVC.view;
@@ -208,8 +209,19 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 }
 
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
-    if (isLandscape) return YES;
     if (!topVC) return NO;
+
+    // Generic Flutter Framework Introspection (Zero bundle ID dependency)
+    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
+        if (isLandscape) {
+            // In landscape mode, Flutter video players use dual-axis touch controls (scrubbing/volume).
+            // Yield control entirely to the player.
+            return NO;
+        }
+        return [self isFlutterSubpageActive:topVC];
+    }
+
+    if (isLandscape) return YES;
     
     if (isTiebaPBViewController(topVC)) return YES;
     
@@ -219,11 +231,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             return NO; 
         }
         return YES; 
-    }
-    
-    // Flutter SPA Navigation Detector
-    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
-        return [self isFlutterSubpageActive:topVC];
     }
     
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
@@ -378,7 +385,7 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
             if (isLikelyButton) {
                 CGFloat dx = r.origin.x - 55.0;
                 CGFloat dy = r.origin.y - 65.0;
-                CGFloat dist = sqrt(dx * dx + dy * dy);
+                CGFloat dist = dx * dx + dy * dy;
                 if (dist < minDistance) {
                     minDistance = dist;
                     bestCandidate = v;
@@ -882,7 +889,7 @@ static void lockRNOrientationToPortrait(void) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
             for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
                     scene = (UIWindowScene *)s; break;
                 }
             }
@@ -1121,22 +1128,6 @@ static void lockRNOrientationToPortrait(void) {
 
 #pragma mark - UIGestureRecognizerDelegate
 
-// ZERO-COLLISION ENGINE: When touch begins, force any scrub pan gestures on the view to require self.pan to fail!
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-    if (gestureRecognizer == self.pan) {
-        UIView *v = touch.view;
-        while (v && v != self.window) {
-            for (UIGestureRecognizer *gr in v.gestureRecognizers) {
-                if (gr != self.pan && ([gr isKindOfClass:[UIPanGestureRecognizer class]] || [gr isKindOfClass:[UISwipeGestureRecognizer class]])) {
-                    [gr requireGestureRecognizerToFail:self.pan];
-                }
-            }
-            v = v.superview;
-        }
-    }
-    return YES;
-}
-
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
 
@@ -1155,11 +1146,15 @@ static void lockRNOrientationToPortrait(void) {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     BOOL isLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
 
+    // Generic Flutter Framework Introspection: Disable gesture in landscape to protect dual-axis player controls
+    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")] && isLandscape) {
+        return NO;
+    }
+
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
-        // Generously wide 110.0pt zone ensures notch/island/home-bar landscape swipes are 100% accepted
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) return NO;
     } else {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
@@ -1202,7 +1197,7 @@ static void lockRNOrientationToPortrait(void) {
 
 @end
 
-#pragma mark - Global Runtime Hooks & Window Injection (Clean v79 Baseline)
+#pragma mark - Global Runtime Hooks & Window Injection
 
 static UIInterfaceOrientationMask (*orig_VC_supportedInterfaceOrientations)(id, SEL);
 static UIInterfaceOrientationMask swiz_VC_supportedInterfaceOrientations(UIViewController *self, SEL _cmd) {
