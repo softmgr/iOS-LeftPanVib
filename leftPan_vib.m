@@ -59,7 +59,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Custom Gesture Recognizer
+#pragma mark - Custom Gesture Recognizer (Pure v1.0.5 / v79)
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
 - (CGPoint)rawVelocityInView:(UIView *)view;
@@ -131,7 +131,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return foundWindow;
 }
 
-// Clean v1.0.5 hierarchy resolver (does not mistakenly drill into custom embedded child view controllers)
+// 100% Restored v79 Controller Resolver (Maintains React Native & complex UI trees)
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -142,6 +142,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
     if ([root isKindOfClass:[UITabBarController class]]) {
         return [self findTopViewController:((UITabBarController *)root).selectedViewController];
+    }
+    for (UIViewController *child in root.childViewControllers.reverseObjectEnumerator) {
+        if (child.isViewLoaded && child.view.window && !child.view.hidden && child.view.alpha > 0.01) {
+            return [self findTopViewController:child];
+        }
     }
     return root;
 }
@@ -204,17 +209,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 }
 
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
-    if (!topVC) return NO;
-
-    // Generic Flutter Framework Introspection
-    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
-        if (isLandscape) {
-            return NO;
-        }
+    // 1. Flutter Framework: Isolate completely, protect dual-axis player controls in landscape
+    if (topVC && [topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
+        if (isLandscape) return NO;
         return [self isFlutterSubpageActive:topVC];
     }
 
+    // 2. Standard Landscape: Always allow return to portrait (Restored to v79)
     if (isLandscape) return YES;
+    if (!topVC) return NO;
     
     if (isTiebaPBViewController(topVC)) return YES;
     
@@ -224,6 +227,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             return NO; 
         }
         return YES; 
+    }
+    
+    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
+    if (UIDeviceOrientationIsLandscape(devOri)) {
+        return YES;
     }
     
     UIViewController *current = topVC;
@@ -242,6 +250,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 + (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
+    
+    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
+    if (UIDeviceOrientationIsLandscape(devOri)) {
+        return YES;
+    }
     
     if (window && window.bounds.size.width > window.bounds.size.height) {
         return YES;
@@ -756,7 +769,7 @@ static void lockRNOrientationToPortrait(void) {
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
-    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
+    if (topVC && [topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         if ([topVC respondsToSelector:NSSelectorFromString(@"popRoute")]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -872,7 +885,7 @@ static void lockRNOrientationToPortrait(void) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
             for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
                     scene = (UIWindowScene *)s; break;
                 }
             }
@@ -922,92 +935,30 @@ static void lockRNOrientationToPortrait(void) {
     });
 }
 
-#pragma mark - Debug Information Dumper
-
-#if ENABLE_DEBUG_LOGGING
-+ (NSString *)dumpViewHierarchy:(UIView *)view depth:(int)depth maxDepth:(int)maxDepth {
-    if (!view || depth > maxDepth) return @"";
-    NSMutableString *result = [NSMutableString string];
-    NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
-
-    CGRect f = view.frame;
-    [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
-
-    for (UIView *sub in view.subviews) {
-        [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
-    }
-    return result;
-}
-
-+ (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
-    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG ===\n"];
-    [log appendFormat:@"Time: %@\n", [NSDate date]];
-    [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
-    [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
-
-    [log appendFormat:@"\n[Controllers]\n"];
-    [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
-    if (topVC.parentViewController) {
-        [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
-    }
-
-    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
-    [log appendFormat:@"ValidNavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
-
-    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
-    if (topVC && topVC.view) {
-        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
-    }
-
-    [log appendFormat:@"\n[Window View Hierarchy (Depth 12)]\n"];
-    if (window) {
-        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:12]];
-    }
-
-    [log appendString:@"=====================\n"];
-
-    @try {
-        UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-        pasteboard.string = log;
-    } @catch (NSException *e) {}
-
-    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
-    [feedback prepare];
-    [feedback impactOccurred];
-}
-#endif
-
-#pragma mark - Gesture & Haptic Handling (Clean v1.0.5 Interactive Sliding Core)
+#pragma mark - Gesture & Haptic Handling (Restored 100% to Clean v1.0.5 / v79)
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
-    UIWindow *window = pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
 
-    BOOL isSystemLandscape = NO;
+    UIWindow *window = pan.view.window ?: self.window;
+    BOOL isLandscape = NO;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
-        isSystemLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
     } else {
-        isSystemLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
 #pragma clang diagnostic pop
 
-    BOOL isAnyLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
-
     if (pan.state == UIGestureRecognizerStateBegan) {
-
-#if ENABLE_DEBUG_LOGGING
-        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isAnyLandscape];
-#endif
-
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        // Visual Interactive Pop: Enabled for all apps with a UINavigationController, EXCEPT special blacklist
-        if (nav && !isAnyLandscape) {
+        // Native Visual Interactive Pop: Re-enabled for all UINavigationController apps (Bilibili, etc.)
+        if (nav && !isLandscape) {
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
@@ -1019,7 +970,7 @@ static void lockRNOrientationToPortrait(void) {
                         if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
                             self.systemTarget = internalTarget;
                             self.systemAction = internalAction;
-                            self.useFallbackMode = NO; // Restored: enables real-time visual dragging!
+                            self.useFallbackMode = NO; // Restored: enables live, visual, follow-through sliding!
                         }
                     }
                 } @catch (NSException *e) { }
@@ -1052,7 +1003,7 @@ static void lockRNOrientationToPortrait(void) {
             });
         }
     } else {
-        [self handleFallbackPan:pan isLandscape:isAnyLandscape topVC:topVC];
+        [self handleFallbackPan:pan isLandscape:isLandscape topVC:topVC];
     }
 }
 
@@ -1111,25 +1062,17 @@ static void lockRNOrientationToPortrait(void) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
 
-    UIWindow *window = self.pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-    BOOL isSystemLandscape = NO;
+    UIWindow *window = self.pan.view.window ?: self.window;
+    BOOL isLandscape = NO;
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
-        isSystemLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
     } else {
-        isSystemLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
 #pragma clang diagnostic pop
-
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController];
-    BOOL isLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
-
-    // Flutter dual-axis gesture protection: disable left-pan in landscape only
-    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")] && isLandscape) {
-        return NO;
-    }
 
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
@@ -1140,6 +1083,8 @@ static void lockRNOrientationToPortrait(void) {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) return NO;
     }
+
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) return NO;
 
@@ -1177,7 +1122,7 @@ static void lockRNOrientationToPortrait(void) {
 
 @end
 
-#pragma mark - Global Runtime Hooks & Window Injection
+#pragma mark - Global Runtime Hooks & Window Injection (100% Restored to v79)
 
 static UIInterfaceOrientationMask (*orig_VC_supportedInterfaceOrientations)(id, SEL);
 static UIInterfaceOrientationMask swiz_VC_supportedInterfaceOrientations(UIViewController *self, SEL _cmd) {
