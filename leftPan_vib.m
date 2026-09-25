@@ -199,6 +199,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
+    // Always permit gesture if physically held horizontally
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
     if (UIDeviceOrientationIsLandscape(devOri)) {
         return YES;
@@ -218,22 +219,27 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 #pragma mark - Universal Video Player & Fake Landscape Engine
 
+// Comprehensive orientation check: combines system, hardware gyro, and visual transform layers
 + (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
     
+    // 1. Check physical hardware orientation
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
     if (UIDeviceOrientationIsLandscape(devOri)) {
         return YES;
     }
     
+    // 2. Check window bounds
     if (window && window.bounds.size.width > window.bounds.size.height) {
         return YES;
     }
     
+    // 3. Check view controller bounds
     if (topVC && topVC.isViewLoaded && topVC.view.bounds.size.width > topVC.view.bounds.size.height) {
         return YES;
     }
     
+    // 4. Scan for 90-degree rotated player container views
     if (window) {
         NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
         int count = 0;
@@ -255,67 +261,50 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Penetrate hidden control layers and fire the exit button directly
-+ (BOOL)searchAndTriggerExitButtonInView:(UIView *)root window:(UIWindow *)window {
+// Safely click the player's internal exit-fullscreen button without hitting outer page buttons
++ (BOOL)searchAndClickPlayerExitButton:(UIView *)root window:(UIWindow *)window {
     if (!root) return NO;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
-    int count = 0;
     
-    while (queue.count > 0 && count < 180) {
+    while (queue.count > 0) {
         UIView *v = queue.firstObject;
         [queue removeObjectAtIndex:0];
-        count++;
         
-        // CRITICAL FIX: DO NOT skip hidden or alpha==0 views here!
-        // When control bars fade out, their alpha becomes 0, but the button remains actionable in memory.
+        // Critical: Never traverse explicitly hidden outer containers (like VDCoverView)
+        if (v.hidden) continue;
+        
+        NSString *cls = NSStringFromClass([v class]);
+        if ([cls containsString:@"CoverView"] || [cls containsString:@"NavBar"]) {
+            continue;
+        }
         
         if ([v isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)v;
             CGRect absFrame = [btn convertRect:btn.bounds toView:window];
-            BOOL isExitBtn = NO;
             
-            // 1. Check registered action selectors
-            for (id target in [btn allTargets]) {
-                NSArray *actions = [btn actionsForTarget:target forControlEvent:UIControlEventTouchUpInside];
-                for (NSString *act in actions) {
-                    NSString *low = [act lowercaseString];
-                    if ([low containsString:@"back"] || [low containsString:@"exit"] || 
-                        [low containsString:@"shrink"] || [low containsString:@"small"] || 
-                        [low containsString:@"screen"]) {
-                        isExitBtn = YES;
-                        break;
-                    }
+            // Check whether button belongs to a player control tree
+            UIView *p = btn.superview;
+            BOOL insidePlayerControl = NO;
+            while (p && p != root) {
+                NSString *pCls = NSStringFromClass([p class]);
+                if ([pCls containsString:@"Player"] || [pCls containsString:@"Control"] || [pCls containsString:@"Widget"]) {
+                    insidePlayerControl = YES;
+                    break;
                 }
-                if (isExitBtn) break;
+                p = p.superview;
             }
             
-            // 2. Geometric heuristic: Top-Left Back Button area
-            if (!isExitBtn) {
+            if (insidePlayerControl) {
+                // Top-Left Back / Exit Fullscreen Button in player header
                 if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
-                    absFrame.size.width >= 20.0 && absFrame.size.width <= 90.0 &&
-                    absFrame.size.height >= 20.0 && absFrame.size.height <= 90.0) {
-                    isExitBtn = YES;
-                }
-            }
-            
-            // 3. Geometric heuristic: Bottom-Right Fullscreen Toggle Button area
-            if (!isExitBtn) {
-                CGFloat w = window.bounds.size.width;
-                CGFloat h = window.bounds.size.height;
-                if (absFrame.origin.x >= w - 90.0 && absFrame.origin.y >= h - 90.0 &&
                     absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
-                    isExitBtn = YES;
+                    btn.enabled = YES;
+                    btn.userInteractionEnabled = YES;
+                    [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    [btn touchesBegan:[NSSet set] withEvent:nil];
+                    [btn touchesEnded:[NSSet set] withEvent:nil];
+                    return YES;
                 }
-            }
-            
-            if (isExitBtn) {
-                // Force-enable to bypass player dormancy defenses
-                btn.enabled = YES;
-                btn.userInteractionEnabled = YES;
-                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                [btn touchesBegan:[NSSet set] withEvent:nil];
-                [btn touchesEnded:[NSSet set] withEvent:nil];
-                return YES;
             }
         }
         [queue addObjectsFromArray:v.subviews];
@@ -323,17 +312,21 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Universally exit full-screen mode on any video player with "Wake-and-Strike" defense
+// Universally exit full-screen video mode safely (NEVER pop the view controller!)
 + (void)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
     
-    // Step 1: Controller Method Reflection
-    NSMutableArray *targets = [NSMutableArray array];
-    if (topVC) [targets addObject:topVC];
-    if (topVC.parentViewController) [targets addObject:topVC.parentViewController];
+    // 1. Safe Player Method Reflection (Exclusively full-screen setters, NO backAction!)
+    NSArray *safeExitSels = @[
+        @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
+        @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
+        @"toggleFullScreen", @"switchFullScreen"
+    ];
     
-    for (id obj in targets) {
+    for (id obj in @[topVC ?: [NSNull null], topVC.parentViewController ?: [NSNull null]]) {
+        if (obj == [NSNull null]) continue;
         UIViewController *vc = (UIViewController *)obj;
+        
         for (NSString *selName in @[@"setFullScreen:", @"setFullscreen:"]) {
             SEL sel = NSSelectorFromString(selName);
             if ([vc respondsToSelector:sel]) {
@@ -352,25 +345,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         if (didTrigger) break;
         
-        NSArray *exitSels = @[
-            @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
-            @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
-            @"toggleFullScreen", @"toggleFullScreen:", @"switchFullScreen",
-            @"toPortrait", @"changeToPortrait", @"didClickBackBtn:", @"onBackBtnClicked:",
-            @"onBackClick:", @"backBtnClick:", @"backButtonClicked:", @"backButtonAction:",
-            @"backAction:", @"backAction", @"clickBack:", @"playerBackAction:"
-        ];
-        
-        for (NSString *s in exitSels) {
+        for (NSString *s in safeExitSels) {
             SEL sel = NSSelectorFromString(s);
             if ([vc respondsToSelector:sel]) {
                 #pragma clang diagnostic push
                 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                if ([s hasSuffix:@":"]) {
-                    [vc performSelector:sel withObject:nil];
-                } else {
-                    [vc performSelector:sel];
-                }
+                [vc performSelector:sel];
                 #pragma clang diagnostic pop
                 didTrigger = YES;
                 break;
@@ -379,28 +359,23 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (didTrigger) break;
     }
     
-    // Step 2: Hidden-Layer Penetration Search
+    // 2. Safe Button Search inside Player View
     UIView *searchRoot = topVC.view ?: window;
-    if (!didTrigger && searchRoot) {
-        didTrigger = [self searchAndTriggerExitButtonInView:searchRoot window:window];
+    if (searchRoot) {
+        didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
     }
     
-    // Step 3: "Wake-and-Strike" Fallback (Mimic User Screen-Tap)
-    // If controls are hidden and the player refuses dormant commands, tap screen center to wake controls,
-    // then strike the exit button 30ms later.
-    if (!didTrigger) {
-        CGFloat screenW = window.bounds.size.width;
-        CGFloat screenH = window.bounds.size.height;
-        CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
-        
-        UIView *centerHit = [window hitTest:centerPt withEvent:nil];
-        if (centerHit) {
-            [centerHit touchesBegan:[NSSet set] withEvent:nil];
-            [centerHit touchesEnded:[NSSet set] withEvent:nil];
+    // 3. Fallback when controls are faded out: Tap center to reveal controls, then click button
+    if (!didTrigger && searchRoot) {
+        CGPoint center = CGPointMake(searchRoot.bounds.size.width * 0.5, searchRoot.bounds.size.height * 0.5);
+        UIView *hit = [searchRoot hitTest:center withEvent:nil];
+        if (hit) {
+            [hit touchesBegan:[NSSet set] withEvent:nil];
+            [hit touchesEnded:[NSSet set] withEvent:nil];
         }
         
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self searchAndTriggerExitButtonInView:searchRoot window:window];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self searchAndClickPlayerExitButton:searchRoot window:window];
         });
     }
 }
@@ -705,11 +680,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    // 1. Landscape / Fullscreen video mode: ONLY exit full-screen to portrait
+                    // 1. In Landscape / Fullscreen video mode: ONLY exit full-screen to portrait.
+                    // Absolutely DO NOT pop or dismiss the view controller here!
                     [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
                 } else {
-                    // 2. Standard Portrait mode: Normal page close/pop
+                    // 2. In Standard Portrait mode: Normal page close/pop.
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
                     } else {
