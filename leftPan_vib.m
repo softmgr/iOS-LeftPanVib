@@ -230,6 +230,30 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
 }
 
+// Accurately distinguish active navigation from normal subpages
++ (BOOL)isAmapNavigatingMode:(UIView *)rootView {
+    if (!rootView) return NO;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (v.hidden || v.alpha < 0.05) continue;
+        
+        NSString *cls = NSStringFromClass([v class]);
+        // Settings, POI sheets, and search result pages have full-height scrollable views (height > 200)
+        if ([cls containsString:@"ScrollView"] || 
+            [cls containsString:@"ListView"] || 
+            [cls containsString:@"SheetsView"] || 
+            [cls containsString:@"TableView"]) {
+            if (v.bounds.size.height > 200.0) {
+                return NO; // Has full-size content list -> Subpage / Settings
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return YES; // No full-size scroll list -> Active turn-by-turn Navigation
+}
+
 + (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
     UIWindow *targetWin = window ?: topVC.view.window ?: [self resolveKeyWindow];
     if (!targetWin) return;
@@ -237,64 +261,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     CGFloat screenH = targetWin.bounds.size.height;
     CGFloat safeTop = [self getSafeAreaTop:targetWin];
 
-    CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
-    CGPoint ptBottomLeft = CGPointMake(50.0, screenH - 48.0);
+    BOOL isNavigating = [self isAmapNavigatingMode:targetWin];
 
-    // 1. Runtime inspection of active navigation managers
-    BOOL isNavigating = NO;
-    Class naviManager = NSClassFromString(@"NMNaviManager");
-    if (naviManager && [naviManager respondsToSelector:@selector(sharedInstance)]) {
-        id mgr = [naviManager performSelector:@selector(sharedInstance)];
-        if (mgr) {
-            for (NSString *s in @[@"isNavi", @"isNavigating", @"isInNavi", @"isNaviStarted"]) {
-                SEL sel = NSSelectorFromString(s);
-                if ([mgr respondsToSelector:sel]) {
-                    BOOL (*func)(id, SEL) = (BOOL (*)(id, SEL))[mgr methodForSelector:sel];
-                    if (func(mgr, sel)) {
-                        isNavigating = YES;
-                        break;
-                    }
-                }
-            }
-        }
+    if (isNavigating) {
+        // Navigation Mode: Target the Bottom-Left Exit Button {50.0, screenH - 48.0}
+        CGPoint ptBottomLeft = CGPointMake(50.0, screenH - 48.0);
+        [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
+    } else {
+        // Settings / Subpage Mode: Target the Top-Left Header Back Button {25.0, safeTop + 22.0}
+        CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
+        [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
     }
-    if (!isNavigating) {
-        Class driveMgr = NSClassFromString(@"AMapNaviDriveManager");
-        if (driveMgr && [driveMgr respondsToSelector:@selector(sharedInstance)]) {
-            id mgr = [driveMgr performSelector:@selector(sharedInstance)];
-            if (mgr && [mgr respondsToSelector:NSSelectorFromString(@"isNaviStarted")]) {
-                BOOL (*func)(id, SEL) = (BOOL (*)(id, SEL))[mgr methodForSelector:NSSelectorFromString(@"isNaviStarted")];
-                if (func(mgr, NSSelectorFromString(@"isNaviStarted"))) {
-                    isNavigating = YES;
-                }
-            }
-        }
-    }
-
-    // 2. View Hierarchy Verification:
-    // In Settings/Subpage, hitTest at ptTopLeft hits a distinct back button (frame width <= 80)
-    // In Navigation, the top area is covered by the oversized guidance banner (width > 300)
-    if (!isNavigating) {
-        UIView *hitTop = [targetWin hitTest:ptTopLeft withEvent:nil];
-        BOOL isSmallButton = NO;
-        UIView *curr = hitTop;
-        for (int i = 0; i < 4 && curr; i++) {
-            CGRect f = [curr convertRect:curr.bounds toView:targetWin];
-            if (f.size.width > 0 && f.size.width <= 80.0 && f.size.height <= 80.0) {
-                isSmallButton = YES;
-                break;
-            }
-            curr = curr.superview;
-        }
-        if (isSmallButton) {
-            // Standard back navigation for Settings and subpages
-            [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
-            return;
-        }
-    }
-
-    // 3. Navigation exit trigger (Bottom-left exit button)
-    [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
