@@ -175,6 +175,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (v.hidden || v.alpha < 0.05) continue;
         
         NSString *cls = NSStringFromClass([v class]);
+        // Identify signature widgets of Amap's root map home screen
         if ([cls isEqualToString:@"WINTabBar"] || 
             [cls isEqualToString:@"WINQuickSearchBarV2"] ||
             [cls isEqualToString:@"AMapUIWaterFallContentSlidableView"]) {
@@ -194,9 +195,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isSpecialApp_Amap()) {
         UIWindow *win = window ?: topVC.view.window ?: [self resolveKeyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
-            return NO; // Suppress gesture on root map
+            return NO; // Suppress gesture on root map home page to prevent accidental app exits
         }
-        return YES; // Allow in subpages, settings, and navigation
+        return YES; // Allow in subpages, settings, and active navigation
     }
     
     UIViewController *current = topVC;
@@ -230,28 +231,30 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
 }
 
-// Accurately distinguish active navigation from normal subpages
-+ (BOOL)isAmapNavigatingMode:(UIView *)rootView {
-    if (!rootView) return NO;
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+// 100% accurate Navigation vs Subpage differentiator by analyzing Amap's HUD widget layer
++ (BOOL)isAmapNavigatingMode:(UIWindow *)window {
+    if (!window) return NO;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
     while (queue.count > 0) {
         UIView *v = queue.firstObject;
         [queue removeObjectAtIndex:0];
-        if (v.hidden || v.alpha < 0.05) continue;
         
         NSString *cls = NSStringFromClass([v class]);
-        // Settings, POI sheets, and search result pages have full-height scrollable views (height > 200)
-        if ([cls containsString:@"ScrollView"] || 
-            [cls containsString:@"ListView"] || 
-            [cls containsString:@"SheetsView"] || 
-            [cls containsString:@"TableView"]) {
-            if (v.bounds.size.height > 200.0) {
-                return NO; // Has full-size content list -> Subpage / Settings
+        // MapWidgetContainerView is Amap's dedicated layer for Heads-Up Display widgets
+        if ([cls isEqualToString:@"MapWidgetContainerView"]) {
+            int visibleCount = 0;
+            for (UIView *sub in v.subviews) {
+                // Count active HUD components (Compass, Weather, ScaleLine, Traffic). 
+                // Navigation mode spawns multiple visible widgets. Subpages clear them.
+                if (!sub.hidden && sub.alpha > 0.01) {
+                    visibleCount++;
+                }
             }
+            return (visibleCount >= 2);
         }
         [queue addObjectsFromArray:v.subviews];
     }
-    return YES; // No full-size scroll list -> Active turn-by-turn Navigation
+    return NO;
 }
 
 + (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
@@ -261,14 +264,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     CGFloat screenH = targetWin.bounds.size.height;
     CGFloat safeTop = [self getSafeAreaTop:targetWin];
 
-    BOOL isNavigating = [self isAmapNavigatingMode:targetWin];
-
-    if (isNavigating) {
-        // Navigation Mode: Target the Bottom-Left Exit Button {50.0, screenH - 48.0}
+    if ([self isAmapNavigatingMode:targetWin]) {
+        // Navigation Mode: Accurately strike the Bottom-Left Exit Navigation button
         CGPoint ptBottomLeft = CGPointMake(50.0, screenH - 48.0);
         [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
     } else {
-        // Settings / Subpage Mode: Target the Top-Left Header Back Button {25.0, safeTop + 22.0}
+        // Subpage/Settings Mode: Strike the standard Top-Left Header Back button
         CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
         [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
     }
