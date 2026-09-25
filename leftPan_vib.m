@@ -107,6 +107,31 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 #pragma mark - Universal Hierarchy Armor-Piercing Algorithm
 
++ (UIWindow *)resolveKeyWindow {
+    UIWindow *foundWindow = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *windowScene = (UIWindowScene *)scene;
+                for (UIWindow *w in windowScene.windows) {
+                    if (w.isKeyWindow) {
+                        foundWindow = w;
+                        break;
+                    }
+                }
+            }
+            if (foundWindow) break;
+        }
+    }
+    if (!foundWindow) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        foundWindow = [[UIApplication sharedApplication] keyWindow];
+#pragma clang diagnostic pop
+    }
+    return foundWindow;
+}
+
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -169,7 +194,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isTiebaPBViewController(topVC)) return YES;
     
     if (isSpecialApp_Amap()) {
-        UIWindow *win = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
+        UIWindow *win = window ?: topVC.view.window ?: [self resolveKeyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
             return NO; // Strictly suppress on main map screen
         }
@@ -215,7 +240,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         
         if (v.hidden || v.alpha < 0.05) continue;
         
-        // 1. Check -text property (AJXLabel, UILabel, etc.)
         if ([v respondsToSelector:@selector(text)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -231,7 +255,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             }
         }
         
-        // 2. Check accessibilityLabel
         if (v.accessibilityLabel) {
             for (NSString *kw in keywords) {
                 if ([v.accessibilityLabel containsString:kw]) {
@@ -250,7 +273,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSInteger methodId = sAmapMethodIndex % 4;
     sAmapMethodIndex++;
 
-    UIWindow *targetWin = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
+    UIWindow *targetWin = window ?: topVC.view.window ?: [self resolveKeyWindow];
     CGFloat screenW = targetWin.bounds.size.width;
     CGFloat screenH = targetWin.bounds.size.height;
     CGFloat safeTop = [self getSafeAreaTop:targetWin];
@@ -261,7 +284,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
     switch (methodId) {
         case 0: {
-            // Proven Method #1 from V56: Top-Left Standard Back
+            // Proven Method #1 from V56: Top-Left Header Back
             CGPoint pt = CGPointMake(25.0, safeTop + 22.0);
             [log appendFormat:@"Mode: Top-Left Header Back (Settings/Subpage Base)\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
             UIView *hit = [targetWin hitTest:pt withEvent:nil];
@@ -299,12 +322,13 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             
             if (foundView) {
                 CGRect absRect = [foundView convertRect:foundView.bounds toView:targetWin];
-                CGPoint centerPt = CGPointMake(CGRectGetMidX(absRect), CGRectGetMidY(absRect));
+                // Pure inline arithmetic avoiding CoreGraphics framework symbol linkage
+                CGPoint centerPt = CGPointMake(absRect.origin.x + absRect.size.width * 0.5,
+                                               absRect.origin.y + absRect.size.height * 0.5);
                 [log appendFormat:@"Found Text: \"%@\" in View: %@\nAt Center: {%.1f, %.1f}\n", matchedText, NSStringFromClass([foundView class]), centerPt.x, centerPt.y];
                 [self dispatchTouchToWindow:targetWin atPoint:centerPt];
                 [log appendString:@"Dispatched touchesBegan/touchesEnded to matched text center\n"];
             } else {
-                // Fallback: Top-Right Close Button
                 CGPoint pt = CGPointMake(screenW - 30.0, safeTop + 22.0);
                 [log appendFormat:@"No matching keywords found. Fallback to Top-Right Close {%.1f, %.1f}\n", pt.x, pt.y];
                 [self dispatchTouchToWindow:targetWin atPoint:pt];
@@ -372,7 +396,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         [viewClassStr containsString:@"EAGL"] || 
         [viewClassStr containsString:@"MTKView"] || 
         [viewClassStr containsString:@"FMetalView"] || 
-        [viewClassStr containsString:@"XRNativeGame"] ||
+        [viewClassStr containsString:@"XRNativeGame"] || 
         [viewClassStr containsString:@"OpenGL"]) {
         return YES;
     }
