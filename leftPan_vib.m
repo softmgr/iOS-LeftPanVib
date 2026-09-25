@@ -131,6 +131,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return foundWindow;
 }
 
+// Clean v1.0.5 hierarchy resolver (does not mistakenly drill into custom embedded child view controllers)
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -141,11 +142,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
     if ([root isKindOfClass:[UITabBarController class]]) {
         return [self findTopViewController:((UITabBarController *)root).selectedViewController];
-    }
-    for (UIViewController *child in root.childViewControllers.reverseObjectEnumerator) {
-        if (child.isViewLoaded && child.view.window && !child.view.hidden && child.view.alpha > 0.01) {
-            return [self findTopViewController:child];
-        }
     }
     return root;
 }
@@ -230,11 +226,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
-    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
-    if (UIDeviceOrientationIsLandscape(devOri)) {
-        return YES;
-    }
-    
     UIViewController *current = topVC;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) return YES;
@@ -251,11 +242,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 + (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
-    
-    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
-    if (UIDeviceOrientationIsLandscape(devOri)) {
-        return YES;
-    }
     
     if (window && window.bounds.size.width > window.bounds.size.height) {
         return YES;
@@ -886,7 +872,7 @@ static void lockRNOrientationToPortrait(void) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
             for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if (s.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
                     scene = (UIWindowScene *)s; break;
                 }
             }
@@ -991,13 +977,13 @@ static void lockRNOrientationToPortrait(void) {
 }
 #endif
 
-#pragma mark - Gesture & Haptic Handling
+#pragma mark - Gesture & Haptic Handling (Clean v1.0.5 Interactive Sliding Core)
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    UIWindow *window = pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
 
-    UIWindow *window = pan.view.window ?: self.window;
     BOOL isSystemLandscape = NO;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -1020,23 +1006,20 @@ static void lockRNOrientationToPortrait(void) {
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
+        // Visual Interactive Pop: Enabled for all apps with a UINavigationController, EXCEPT special blacklist
         if (nav && !isAnyLandscape) {
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
-                    if (nav.interactivePopGestureRecognizer && !nav.interactivePopGestureRecognizer.isEnabled) {
-                        self.useFallbackMode = YES;
-                    } else {
-                        NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
-                        if (targets && targets.count > 0) {
-                            id internalTarget = [targets.firstObject valueForKey:@"target"];
-                            SEL internalAction = NSSelectorFromString(@"handleNavigationTransition:");
-                            if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
-                                self.systemTarget = internalTarget;
-                                self.systemAction = internalAction;
-                                self.useFallbackMode = NO; 
-                            }
+                    NSArray *targets = [nav.interactivePopGestureRecognizer valueForKey:@"targets"];
+                    if (targets && targets.count > 0) {
+                        id internalTarget = [targets.firstObject valueForKey:@"target"];
+                        SEL internalAction = NSSelectorFromString(@"handleNavigationTransition:");
+                        if (internalTarget && [internalTarget respondsToSelector:internalAction]) {
+                            self.systemTarget = internalTarget;
+                            self.systemAction = internalAction;
+                            self.useFallbackMode = NO; // Restored: enables real-time visual dragging!
                         }
                     }
                 } @catch (NSException *e) { }
@@ -1128,7 +1111,7 @@ static void lockRNOrientationToPortrait(void) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
 
-    UIWindow *window = self.pan.view.window ?: self.window;
+    UIWindow *window = self.pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
     BOOL isSystemLandscape = NO;
 
 #pragma clang diagnostic push
@@ -1140,10 +1123,10 @@ static void lockRNOrientationToPortrait(void) {
     }
 #pragma clang diagnostic pop
 
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController];
     BOOL isLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
 
-    // Generic Flutter Framework Introspection: Disable gesture in landscape to protect dual-axis player controls
+    // Flutter dual-axis gesture protection: disable left-pan in landscape only
     if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")] && isLandscape) {
         return NO;
     }
