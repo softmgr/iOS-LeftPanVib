@@ -256,59 +256,158 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-+ (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
-    UIView *hit = [window hitTest:pt withEvent:nil];
-    if (hit) {
-        [hit touchesBegan:[NSSet set] withEvent:nil];
-        [hit touchesEnded:[NSSet set] withEvent:nil];
++ (CGFloat)getSafeAreaTop:(UIWindow *)window {
+    if (@available(iOS 11.0, *)) {
+        if (window && window.safeAreaInsets.top > 0) {
+            return window.safeAreaInsets.top;
+        }
     }
+    return 20.0;
 }
 
-+ (BOOL)searchAndClickPlayerExitButton:(UIView *)root window:(UIWindow *)window {
-    if (!root) return NO;
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
-    
++ (CGFloat)getSafeAreaBottom:(UIWindow *)window {
+    if (@available(iOS 11.0, *)) {
+        if (window && window.safeAreaInsets.bottom > 0) {
+            return window.safeAreaInsets.bottom;
+        }
+    }
+    return 0.0;
+}
+
+// React Native & UIKit Synthetic Tap Dispatcher
++ (void)simulateTapAtPoint:(CGPoint)pt inWindow:(UIWindow *)window {
+    if (!window) return;
+    UIView *hitView = [window hitTest:pt withEvent:nil];
+    if (!hitView) return;
+
+    // 1. Native UIControl click
+    if ([hitView isKindOfClass:[UIControl class]]) {
+        UIControl *ctrl = (UIControl *)hitView;
+        [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
+    }
+
+    // 2. Attached UIGestureRecognizers trigger (e.g. RNGestureHandler)
+    UIView *curr = hitView;
+    while (curr && curr != window) {
+        for (UIGestureRecognizer *gr in curr.gestureRecognizers) {
+            if ([gr isKindOfClass:[UITapGestureRecognizer class]]) {
+                @try {
+                    NSArray *targets = [gr valueForKey:@"targets"];
+                    for (id t in targets) {
+                        id target = [t valueForKey:@"target"];
+                        SEL action = NSSelectorFromString([t valueForKey:@"action"] ?: @"");
+                        if (target && action && [target respondsToSelector:action]) {
+                            #pragma clang diagnostic push
+                            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                            [target performSelector:action withObject:gr];
+                            #pragma clang diagnostic pop
+                        }
+                    }
+                } @catch (NSException *e) {}
+            }
+        }
+        curr = curr.superview;
+    }
+
+    // 3. React Native RCTTouchHandler pipeline bypass (Paper & Fabric)
+    UIGestureRecognizer *touchHandler = nil;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
     while (queue.count > 0) {
         UIView *v = queue.firstObject;
         [queue removeObjectAtIndex:0];
-        
-        if (v.hidden) continue;
-        
-        NSString *cls = NSStringFromClass([v class]);
-        if ([cls containsString:@"CoverView"] || [cls containsString:@"NavBar"]) {
-            continue;
-        }
-        
-        if ([v isKindOfClass:[UIButton class]]) {
-            UIButton *btn = (UIButton *)v;
-            CGRect absFrame = [btn convertRect:btn.bounds toView:window];
-            
-            UIView *p = btn.superview;
-            BOOL insidePlayerControl = NO;
-            while (p && p != root) {
-                NSString *pCls = NSStringFromClass([p class]);
-                if ([pCls containsString:@"Player"] || [pCls containsString:@"Control"] || [pCls containsString:@"Widget"]) {
-                    insidePlayerControl = YES;
-                    break;
-                }
-                p = p.superview;
-            }
-            
-            if (insidePlayerControl) {
-                if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
-                    absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
-                    btn.enabled = YES;
-                    btn.userInteractionEnabled = YES;
-                    [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                    [btn touchesBegan:[NSSet set] withEvent:nil];
-                    [btn touchesEnded:[NSSet set] withEvent:nil];
-                    return YES;
-                }
+        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+            NSString *cls = NSStringFromClass([gr class]);
+            if ([cls containsString:@"TouchHandler"]) {
+                touchHandler = gr;
+                break;
             }
         }
+        if (touchHandler) break;
         [queue addObjectsFromArray:v.subviews];
     }
-    return NO;
+
+    if (!touchHandler) return;
+
+    @try {
+        UITouch *touch = [[UITouch alloc] init];
+
+        if ([touch respondsToSelector:@selector(setWindow:)]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [touch performSelector:@selector(setWindow:) withObject:window];
+            #pragma clang diagnostic pop
+        } else {
+            [touch setValue:window forKey:@"_window"];
+        }
+
+        if ([touch respondsToSelector:@selector(setView:)]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [touch performSelector:@selector(setView:) withObject:hitView];
+            #pragma clang diagnostic pop
+        } else {
+            [touch setValue:hitView forKey:@"_view"];
+        }
+
+        if ([touch respondsToSelector:@selector(setTapCount:)]) {
+            NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setTapCount:)];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:@selector(setTapCount:)];
+            [inv setTarget:touch];
+            NSUInteger tc = 1;
+            [inv setArgument:&tc atIndex:2];
+            [inv invoke];
+        }
+
+        if ([touch respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
+            NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(_setLocationInWindow:resetPrevious:)];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:@selector(_setLocationInWindow:resetPrevious:)];
+            [inv setTarget:touch];
+            [inv setArgument:&pt atIndex:2];
+            BOOL reset = YES;
+            [inv setArgument:&reset atIndex:3];
+            [inv invoke];
+        } else {
+            [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
+        }
+
+        // Send Began
+        if ([touch respondsToSelector:@selector(setPhase:)]) {
+            NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setPhase:)];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:@selector(setPhase:)];
+            [inv setTarget:touch];
+            UITouchPhase phase = UITouchPhaseBegan;
+            [inv setArgument:&phase atIndex:2];
+            [inv invoke];
+        } else {
+            [touch setValue:@(UITouchPhaseBegan) forKey:@"_phase"];
+        }
+
+        if ([touchHandler respondsToSelector:@selector(touchesBegan:withEvent:)]) {
+            [touchHandler touchesBegan:[NSSet setWithObject:touch] withEvent:nil];
+        }
+
+        // Send Ended after 35ms
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([touch respondsToSelector:@selector(setPhase:)]) {
+                NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setPhase:)];
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setSelector:@selector(setPhase:)];
+                [inv setTarget:touch];
+                UITouchPhase phase = UITouchPhaseEnded;
+                [inv setArgument:&phase atIndex:2];
+                [inv invoke];
+            } else {
+                [touch setValue:@(UITouchPhaseEnded) forKey:@"_phase"];
+            }
+
+            if ([touchHandler respondsToSelector:@selector(touchesEnded:withEvent:)]) {
+                [touchHandler touchesEnded:[NSSet setWithObject:touch] withEvent:nil];
+            }
+        });
+    } @catch (NSException *e) {}
 }
 
 static void unlockRNOrientation(void) {
@@ -335,52 +434,103 @@ static void unlockRNOrientation(void) {
     }
 }
 
-// Traverse view tree and clamp overflowing video containers to portrait width
+// Clamp overflowing landscape views and adapt subviews into portrait bounds
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
     int count = 0;
-    
+
     while (queue.count > 0 && count < 250) {
         UIView *v = queue.firstObject;
         [queue removeObjectAtIndex:0];
         count++;
-        
+
         CGRect f = v.frame;
-        // Target views that are wider than portrait screen bounds (e.g. 926 > 428)
+
+        // 1. Constrain oversized parent containers
         if (f.size.width > targetW + 5.0) {
             CGFloat newW = targetW;
             CGFloat newH = f.size.height;
-            
-            // If it's a full-screen height video player container, adapt to standard 16:9 inline player height
             if (newH > targetW * 0.70) {
                 newH = targetW * (9.0 / 16.0);
             }
-            
             v.frame = CGRectMake(0, f.origin.y, newW, newH);
             v.bounds = CGRectMake(0, 0, newW, newH);
             [v setNeedsLayout];
             [v layoutIfNeeded];
         }
+
+        // 2. Pull subviews that are overflowing past the right edge back into bounds
+        if (f.origin.x + f.size.width > targetW + 2.0 && f.size.width < targetW) {
+            CGFloat newX = targetW - f.size.width - 12.0;
+            if (newX < 0) newX = 0;
+            v.frame = CGRectMake(newX, f.origin.y, f.size.width, f.size.height);
+        }
+
         [queue addObjectsFromArray:v.subviews];
     }
 }
 
-// Universal exit full-screen mode for React Native (RCTVideo), Bilibili, and native players
++ (BOOL)searchAndClickPlayerExitButton:(UIView *)root window:(UIWindow *)window {
+    if (!root) return NO;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+
+        if (v.hidden) continue;
+
+        NSString *cls = NSStringFromClass([v class]);
+        if ([cls containsString:@"CoverView"] || [cls containsString:@"NavBar"]) {
+            continue;
+        }
+
+        if ([v isKindOfClass:[UIButton class]]) {
+            UIButton *btn = (UIButton *)v;
+            CGRect absFrame = [btn convertRect:btn.bounds toView:window];
+
+            UIView *p = btn.superview;
+            BOOL insidePlayerControl = NO;
+            while (p && p != root) {
+                NSString *pCls = NSStringFromClass([p class]);
+                if ([pCls containsString:@"Player"] || [pCls containsString:@"Control"] || [pCls containsString:@"Widget"]) {
+                    insidePlayerControl = YES;
+                    break;
+                }
+                p = p.superview;
+            }
+
+            if (insidePlayerControl) {
+                if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
+                    absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
+                    btn.enabled = YES;
+                    btn.userInteractionEnabled = YES;
+                    [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    [btn touchesBegan:[NSSet set] withEvent:nil];
+                    [btn touchesEnded:[NSSet set] withEvent:nil];
+                    return YES;
+                }
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return NO;
+}
+
 + (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
-    
-    // 1. Selector Reflection on View Controllers
+
     NSArray *safeExitSels = @[
         @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
         @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
         @"toggleFullScreen", @"switchFullScreen"
     ];
-    
+
     for (id obj in @[topVC ?: [NSNull null], topVC.parentViewController ?: [NSNull null]]) {
         if (obj == [NSNull null]) continue;
         UIViewController *vc = (UIViewController *)obj;
-        
+
         for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullScreen:", @"setFullscreen:"]) {
             SEL sel = NSSelectorFromString(selName);
             if ([vc respondsToSelector:sel]) {
@@ -398,7 +548,7 @@ static void unlockRNOrientation(void) {
             }
         }
         if (didTrigger) break;
-        
+
         for (NSString *s in safeExitSels) {
             SEL sel = NSSelectorFromString(s);
             if ([vc respondsToSelector:sel]) {
@@ -412,8 +562,7 @@ static void unlockRNOrientation(void) {
         }
         if (didTrigger) break;
     }
-    
-    // 2. View Hierarchy Scan for Player Views (e.g., react_native_video.RCTVideo, AVPlayer, ZFPlayer)
+
     if (window) {
         NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
         int count = 0;
@@ -421,7 +570,7 @@ static void unlockRNOrientation(void) {
             UIView *v = queue.firstObject;
             [queue removeObjectAtIndex:0];
             count++;
-            
+
             for (NSString *s in @[@"dismissFullscreenPlayer", @"exitFullScreen", @"exitFullscreen", @"shrinkScreen", @"toSmallScreen"]) {
                 SEL sel = NSSelectorFromString(s);
                 if ([v respondsToSelector:sel]) {
@@ -434,7 +583,7 @@ static void unlockRNOrientation(void) {
                 }
             }
             if (didTrigger) break;
-            
+
             for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullscreen:", @"setFullScreen:"]) {
                 SEL sel = NSSelectorFromString(selName);
                 if ([v respondsToSelector:sel]) {
@@ -452,62 +601,29 @@ static void unlockRNOrientation(void) {
                 }
             }
             if (didTrigger) break;
-            
+
             [queue addObjectsFromArray:v.subviews];
         }
     }
-    
-    // 3. Native UIButton search inside player controls
+
     if (!didTrigger) {
         UIView *searchRoot = topVC.view ?: window;
         if (searchRoot) {
             didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
         }
     }
-    
-    // 4. Universal Physical Touch Dispatch (Target Top-Left Back Button for RCTView, Flutter, etc.)
-    if (window) {
-        CGFloat safeLeft = 0.0;
-        CGFloat safeTop = 0.0;
-        if (@available(iOS 11.0, *)) {
-            if (window.safeAreaInsets.left > 0) safeLeft = window.safeAreaInsets.left;
-            if (window.safeAreaInsets.top > 0) safeTop = window.safeAreaInsets.top;
-        }
-        CGPoint ptTopLeft = CGPointMake(safeLeft + 35.0, safeTop + 25.0);
-        
-        CGFloat screenW = window.bounds.size.width;
-        CGFloat screenH = window.bounds.size.height;
-        CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
-        [self dispatchTouchToWindow:window atPoint:centerPt];
-        
-        [self dispatchTouchToWindow:window atPoint:ptTopLeft];
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self dispatchTouchToWindow:window atPoint:ptTopLeft];
-        });
-    }
-    
+
     return didTrigger;
 }
 
 #pragma mark - Amap Dual-Strike Return Engine
 
-+ (CGFloat)getSafeAreaTop:(UIWindow *)window {
-    if (@available(iOS 11.0, *)) {
-        if (window && window.safeAreaInsets.top > 0) {
-            return window.safeAreaInsets.top;
-        }
++ (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
+    UIView *hit = [window hitTest:pt withEvent:nil];
+    if (hit) {
+        [hit touchesBegan:[NSSet set] withEvent:nil];
+        [hit touchesEnded:[NSSet set] withEvent:nil];
     }
-    return 20.0;
-}
-
-+ (CGFloat)getSafeAreaBottom:(UIWindow *)window {
-    if (@available(iOS 11.0, *)) {
-        if (window && window.safeAreaInsets.bottom > 0) {
-            return window.safeAreaInsets.bottom;
-        }
-    }
-    return 0.0;
 }
 
 + (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
@@ -520,9 +636,9 @@ static void unlockRNOrientation(void) {
 
     CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
     CGPoint ptBottomLeft = CGPointMake(50.0, screenH - safeBottom - 48.0);
-    
+
     [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
-    
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
     });
@@ -553,7 +669,7 @@ static void unlockRNOrientation(void) {
 + (BOOL)isForbiddenAppViewController:(UIViewController *)vc {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    
+
     if ([bundleID isEqualToString:@"com.tencent.xin"]) {
         UIViewController *curr = vc;
         while (curr) {
@@ -573,7 +689,7 @@ static void unlockRNOrientation(void) {
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
-    
+
     NSString *viewClassStr = NSStringFromClass([view class]);
     if ([viewClassStr containsString:@"Unity"] || 
         [viewClassStr containsString:@"EAGL"] || 
@@ -583,7 +699,7 @@ static void unlockRNOrientation(void) {
         [viewClassStr containsString:@"OpenGL"]) {
         return YES;
     }
-    
+
     for (UIView *subview in view.subviews) {
         if ([self hasGameEngineView:subview depth:depth + 1]) {
             return YES;
@@ -592,7 +708,7 @@ static void unlockRNOrientation(void) {
     return NO;
 }
 
-// Multi-Stage Force Rotation & Dimensions Engine
+// Multi-Stage Force Rotation & Control Re-layout Engine
 - (void)forcePortraitOrientation {
     g_forceAllowPortrait = YES;
     unlockRNOrientation();
@@ -644,7 +760,7 @@ static void unlockRNOrientation(void) {
         [UIViewController attemptRotationToDeviceOrientation];
     }
 
-    // 3. Multi-Stage Pipeline: As window rotates, synchronize React Native Dimensions and clamp layout
+    // 3. Multi-Stage Pipeline: Synchronize Dimensions and clamp views
     NSArray *intervals = @[@(0.10), @(0.25), @(0.45), @(0.70)];
     for (NSNumber *delay in intervals) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([delay doubleValue] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -653,14 +769,12 @@ static void unlockRNOrientation(void) {
             CGFloat screenH = win ? win.bounds.size.height : [UIScreen mainScreen].bounds.size.height;
             CGFloat targetW = MIN(screenW, screenH);
 
-            // Re-broadcast notifications as scene updates to refresh RN Dimensions cache
             [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Wdeprecated-declarations"
             [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidChangeStatusBarOrientationNotification object:nil];
             #pragma clang diagnostic pop
 
-            // Clamp any overflowing video containers and re-layout
             if (win) {
                 [LeftPanWindowHelper correctLandscapeViewHierarchy:win targetWidth:targetW];
                 [win setNeedsLayout];
@@ -669,7 +783,27 @@ static void unlockRNOrientation(void) {
         });
     }
 
-    // 4. Release orientation privilege after transition settles
+    // 4. Automated Exit Tap Pipeline (Triggers RN onPress to snap controls into portrait layout)
+    NSArray *tapIntervals = @[@(0.35), @(0.55)];
+    for (NSNumber *tDelay in tapIntervals) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([tDelay doubleValue] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+            if (win) {
+                CGFloat safeTop = [LeftPanWindowHelper getSafeAreaTop:win];
+                CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
+
+                // Auto-target the exact center of the top-left return widget
+                UIView *hit = [win hitTest:ptTopLeft withEvent:nil];
+                if (hit && hit != win) {
+                    CGRect hitFrameInWin = [hit convertRect:hit.bounds toView:win];
+                    ptTopLeft = CGPointMake(CGRectGetMidX(hitFrameInWin), CGRectGetMidY(hitFrameInWin));
+                }
+                [LeftPanWindowHelper simulateTapAtPoint:ptTopLeft inWindow:win];
+            }
+        });
+    }
+
+    // 5. Release orientation privilege
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         g_forceAllowPortrait = NO;
         if (@available(iOS 16.0, *)) {
@@ -685,10 +819,10 @@ static void unlockRNOrientation(void) {
     if (!view || depth > maxDepth) return @"";
     NSMutableString *result = [NSMutableString string];
     NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
-    
+
     CGRect f = view.frame;
     [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
-    
+
     for (UIView *sub in view.subviews) {
         [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
     }
@@ -700,31 +834,31 @@ static void unlockRNOrientation(void) {
     [log appendFormat:@"Time: %@\n", [NSDate date]];
     [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
     [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
-    
+
     [log appendFormat:@"\n[Controllers]\n"];
     [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
     if (topVC.parentViewController) {
         [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
     }
-    
+
     UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
     [log appendFormat:@"ValidNavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
-    
+
     [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
     if (topVC && topVC.view) {
         [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
     }
-    
+
     [log appendFormat:@"\n[Window View Hierarchy (Depth 12)]\n"];
     if (window) {
         [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:12]];
     }
-    
+
     [log appendString:@"=====================\n"];
-    
+
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     pasteboard.string = log;
-    
+
     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
     [feedback prepare];
     [feedback impactOccurred];
@@ -736,10 +870,10 @@ static void unlockRNOrientation(void) {
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
-    
+
     UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
-    
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
@@ -748,13 +882,13 @@ static void unlockRNOrientation(void) {
         isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
 #pragma clang diagnostic pop
-    
+
     if (pan.state == UIGestureRecognizerStateBegan) {
-        
+
 #if ENABLE_DEBUG_LOGGING
         [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
 #endif
-        
+
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
@@ -788,7 +922,7 @@ static void unlockRNOrientation(void) {
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         [self.systemTarget performSelector:self.systemAction withObject:pan];
         #pragma clang diagnostic pop
-        
+
         if (pan.state == UIGestureRecognizerStateBegan) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 id<UIViewControllerTransitionCoordinator> coordinator = topVC.transitionCoordinator ?: nav.transitionCoordinator;
@@ -819,7 +953,7 @@ static void unlockRNOrientation(void) {
         CGPoint trans = [pan translationInView:pan.view];
         CGPoint vel = [pan velocityInView:pan.view];
         CGFloat screenWidth = pan.view.bounds.size.width;
-        
+
         BOOL success = NO;
         if (vel.x > kLPVFallbackSuccessVelocity) {
             success = (trans.x > kLPVFallbackMinFlickTranslation);
@@ -830,10 +964,10 @@ static void unlockRNOrientation(void) {
             CGFloat requiredTrans = isLandscape ? kLPVFallbackSuccessTranslation : (screenWidth * ratio);
             success = (trans.x > requiredTrans);
         }
-        
+
         if (success) {
             BOOL isAnyLandscape = [LeftPanWindowHelper isAnyLandscapeActive:self.window topVC:topVC isSystemLandscape:isLandscape];
-            
+
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
                 #if !ENABLE_DEBUG_LOGGING
@@ -845,7 +979,7 @@ static void unlockRNOrientation(void) {
                 if (isAnyLandscape) {
                     BOOL videoHandled = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
-                    
+
                     if (!videoHandled && !isSpecialApp_Amap()) {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                             UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
@@ -877,7 +1011,7 @@ static void unlockRNOrientation(void) {
 
     UIWindow *window = self.pan.view.window ?: self.window;
     BOOL isLandscape = NO;
-    
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (@available(iOS 13.0, *)) {
@@ -934,7 +1068,7 @@ static void unlockRNOrientation(void) {
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
-        
+
 #if ENABLE_DEBUG_LOGGING
         return YES;
 #endif
