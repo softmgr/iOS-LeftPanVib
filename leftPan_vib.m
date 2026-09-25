@@ -255,6 +255,14 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
++ (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
+    UIView *hit = [window hitTest:pt withEvent:nil];
+    if (hit) {
+        [hit touchesBegan:[NSSet set] withEvent:nil];
+        [hit touchesEnded:[NSSet set] withEvent:nil];
+    }
+}
+
 + (BOOL)searchAndClickPlayerExitButton:(UIView *)root window:(UIWindow *)window {
     if (!root) return NO;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -302,9 +310,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
+// Universal exit full-screen mode for React Native (RCTVideo), Bilibili, and native players
 + (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
     
+    // 1. Selector Reflection on View Controllers
     NSArray *safeExitSels = @[
         @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
         @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
@@ -347,20 +357,100 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (didTrigger) break;
     }
     
-    UIView *searchRoot = topVC.view ?: window;
-    if (!didTrigger && searchRoot) {
-        didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
+    // 2. View Hierarchy Scan for Player Views (e.g., react_native_video.RCTVideo, AVPlayer, ZFPlayer)
+    if (window) {
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
+        int count = 0;
+        while (queue.count > 0 && count < 150) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            count++;
+            
+            for (NSString *s in @[@"dismissFullscreenPlayer", @"exitFullScreen", @"exitFullscreen", @"shrinkScreen", @"toSmallScreen"]) {
+                SEL sel = NSSelectorFromString(s);
+                if ([v respondsToSelector:sel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [v performSelector:sel];
+                    #pragma clang diagnostic pop
+                    didTrigger = YES;
+                    break;
+                }
+            }
+            if (didTrigger) break;
+            
+            for (NSString *selName in @[@"setFullscreen:", @"setFullScreen:"]) {
+                SEL sel = NSSelectorFromString(selName);
+                if ([v respondsToSelector:sel]) {
+                    NSMethodSignature *sig = [v methodSignatureForSelector:sel];
+                    if (sig && sig.numberOfArguments == 3) {
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        [inv setSelector:sel];
+                        [inv setTarget:v];
+                        BOOL val = NO;
+                        [inv setArgument:&val atIndex:2];
+                        [inv invoke];
+                        didTrigger = YES;
+                        break;
+                    }
+                }
+            }
+            if (didTrigger) break;
+            
+            [queue addObjectsFromArray:v.subviews];
+        }
     }
     
-    if (!didTrigger && searchRoot) {
-        CGPoint center = CGPointMake(searchRoot.bounds.size.width * 0.5, searchRoot.bounds.size.height * 0.5);
-        UIView *hit = [searchRoot hitTest:center withEvent:nil];
-        if (hit) {
-            [hit touchesBegan:[NSSet set] withEvent:nil];
-            [hit touchesEnded:[NSSet set] withEvent:nil];
+    // 3. React Native Orientation Locker Bypass
+    Class oriClass = NSClassFromString(@"Orientation");
+    if (oriClass) {
+        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
+        if ([oriClass respondsToSelector:setOriSel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [oriClass performSelector:setOriSel withObject:(id)(intptr_t)UIInterfaceOrientationMaskAll];
+            #pragma clang diagnostic pop
         }
+        SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
+        if ([oriClass respondsToSelector:lockPortSel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [oriClass performSelector:lockPortSel];
+            #pragma clang diagnostic pop
+        }
+    }
+    
+    // 4. Native UIButton search inside player controls
+    if (!didTrigger) {
+        UIView *searchRoot = topVC.view ?: window;
+        if (searchRoot) {
+            didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
+        }
+    }
+    
+    // 5. Universal Physical Touch Dispatch (Target Top-Left Back Button for RCTView, Flutter, etc.)
+    if (window) {
+        CGFloat safeLeft = 0.0;
+        CGFloat safeTop = 0.0;
+        if (@available(iOS 11.0, *)) {
+            if (window.safeAreaInsets.left > 0) safeLeft = window.safeAreaInsets.left;
+            if (window.safeAreaInsets.top > 0) safeTop = window.safeAreaInsets.top;
+        }
+        CGPoint ptTopLeft = CGPointMake(safeLeft + 35.0, safeTop + 25.0);
         
-        didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
+        // Wake up controls with center touch
+        CGFloat screenW = window.bounds.size.width;
+        CGFloat screenH = window.bounds.size.height;
+        CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
+        [self dispatchTouchToWindow:window atPoint:centerPt];
+        
+        // Direct touch dispatch to top-left back position
+        [self dispatchTouchToWindow:window atPoint:ptTopLeft];
+        didTrigger = YES;
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self dispatchTouchToWindow:window atPoint:ptTopLeft];
+        });
     }
     
     return didTrigger;
@@ -384,14 +474,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
     }
     return 0.0;
-}
-
-+ (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
-    UIView *hit = [window hitTest:pt withEvent:nil];
-    if (hit) {
-        [hit touchesBegan:[NSSet set] withEvent:nil];
-        [hit touchesEnded:[NSSet set] withEvent:nil];
-    }
 }
 
 + (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
@@ -477,6 +559,24 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 }
 
 - (void)forcePortraitOrientation {
+    Class oriClass = NSClassFromString(@"Orientation");
+    if (oriClass) {
+        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
+        if ([oriClass respondsToSelector:setOriSel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [oriClass performSelector:setOriSel withObject:(id)(intptr_t)UIInterfaceOrientationMaskAll];
+            #pragma clang diagnostic pop
+        }
+        SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
+        if ([oriClass respondsToSelector:lockPortSel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [oriClass performSelector:lockPortSel];
+            #pragma clang diagnostic pop
+        }
+    }
+
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
@@ -664,18 +764,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    BOOL exitedVideo = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
+                    [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
-                    
-                    // Fallback: If no video was exited (e.g. user lying sideways in bed browsing a normal list)
-                    // smoothly pop/close the page as expected!
-                    if (!exitedVideo && !isLandscape) {
-                        if (isSpecialApp_Amap()) {
-                            [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
-                        } else {
-                            [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
-                        }
-                    }
                 } else {
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
