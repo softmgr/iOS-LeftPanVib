@@ -11,7 +11,7 @@
 // ---------------------------------------------------------
 #define kLPVPortraitZoneRatio (4.0 / 5.0)        
 #define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
-#define kLPVLandscapeZoneWidth 65.0              
+#define kLPVLandscapeZoneWidth 80.0              
 #define kLPVGestureStartVelocityThreshold -40.0
 #define kLPVPortraitSuccessTranslationRatio 0.35     
 #define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
@@ -59,6 +59,29 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
+#pragma mark - Competing Gesture Freezing Engine
+
+static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer *activePan) {
+    if (!rootView) return;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+            if (gr != activePan && gr.isEnabled) {
+                if ([gr isKindOfClass:[UIPanGestureRecognizer class]] ||
+                    [gr isKindOfClass:[UISwipeGestureRecognizer class]] ||
+                    [NSStringFromClass([gr class]) containsString:@"Pan"] ||
+                    [NSStringFromClass([gr class]) containsString:@"Swipe"]) {
+                    gr.enabled = NO;
+                    gr.enabled = YES;
+                }
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+}
+
 #pragma mark - Custom Gesture Recognizer
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
@@ -78,6 +101,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return CGPointMake(-v.x, v.y);
 }
 
+// Ensure LeftPan PREVENTS player scrub gestures from starting
 - (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)preventedGestureRecognizer {
     if ([preventedGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
         return NO;
@@ -85,6 +109,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return YES;
 }
 
+// Ensure LeftPan CANNOT BE PREVENTED by player scrub gestures
 - (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)preventingGestureRecognizer {
     if ([preventingGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
         return YES;
@@ -1008,30 +1033,6 @@ static void lockRNOrientationToPortrait(void) {
 }
 #endif
 
-#pragma mark - Competing Gesture Freezing Engine
-
-static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer *activePan) {
-    if (!rootView) return;
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
-    while (queue.count > 0) {
-        UIView *v = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
-            if (gr != activePan && gr.isEnabled) {
-                if ([gr isKindOfClass:[UIPanGestureRecognizer class]] ||
-                    [gr isKindOfClass:[UISwipeGestureRecognizer class]] ||
-                    [NSStringFromClass([gr class]) containsString:@"Pan"] ||
-                    [NSStringFromClass([gr class]) containsString:@"Swipe"]) {
-                    // Toggling enabled safely resets and forces competitor into UIGestureRecognizerStateCancelled
-                    gr.enabled = NO;
-                    gr.enabled = YES;
-                }
-            }
-        }
-        [queue addObjectsFromArray:v.subviews];
-    }
-}
-
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
@@ -1052,7 +1053,7 @@ static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer 
     BOOL isAnyLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
 
     if (pan.state == UIGestureRecognizerStateBegan) {
-        // Freeze and cancel video scrubbing gestures in the player immediately
+        // Cut off player scrubbing gestures in the window immediately
         cancelCompetingGesturesInView(window, pan);
 
 #if ENABLE_DEBUG_LOGGING
@@ -1216,8 +1217,13 @@ static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer 
     return YES;
 }
 
-// RESTORED V79 LAW: Force competitor pan/scrub gestures to WAIT for LeftPan to fail!
+// CRITICAL FIX 1: LeftPan MUST NEVER be required to fail by competitor gestures!
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return NO;
+}
+
+// CRITICAL FIX 2: Competitor pan/scrub/drag gestures MUST WAIT for LeftPan to fail!
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (gestureRecognizer == self.pan) {
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
@@ -1314,6 +1320,16 @@ __attribute__((constructor)) static void init_leftPanGlobal(void) {
                                                   usingBlock:^(NSNotification *note) {
         if ([note.object isKindOfClass:[UIWindow class]]) {
             attachHelperToWindow((UIWindow *)note.object);
+        }
+    }];
+
+    // Dynamic Orientation Listener: ensure all windows are monitored on physical rotation
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            attachHelperToWindow(w);
         }
     }];
 
