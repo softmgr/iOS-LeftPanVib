@@ -43,6 +43,16 @@ static BOOL isSpecialApp_Amap(void) {
     return isAmap;
 }
 
+static BOOL isSpecialApp_Bilibili(void) {
+    static BOOL isBili = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        isBili = [bundleID containsString:@"bili"] || [bundleID containsString:@"danmaku"];
+    });
+    return isBili;
+}
+
 static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -194,9 +204,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isSpecialApp_Amap()) {
         UIWindow *win = window ?: topVC.view.window ?: [self resolveKeyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
-            return NO; // Suppress gesture on root map
+            return NO; 
         }
-        return YES; // Enable custom LPV back in Subpages and Navigation
+        return YES; 
     }
     
     UIViewController *current = topVC;
@@ -211,7 +221,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Amap Dual-Strike Return Engine (Inspired by User)
+#pragma mark - Amap Dual-Strike Return Engine
 
 + (CGFloat)getSafeAreaTop:(UIWindow *)window {
     if (@available(iOS 11.0, *)) {
@@ -249,17 +259,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
     CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
     CGPoint ptBottomLeft = CGPointMake(50.0, screenH - safeBottom - 48.0);
-
-    // =========================================================================
-    // THE DUAL-STRIKE SEQUENCE
-    // Discards complex state checking. Brute-forces the return action by 
-    // consecutively tapping both known exit coordinates safely.
-    // =========================================================================
     
-    // 1. Strike Top-Left first (Triggers standard back on Settings/Subpages, harmless on Navigation)
     [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
     
-    // 2. Strike Bottom-Left with a microscopic 10ms delay (Triggers Navigation 'X' exit, harmless on Subpages)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
     });
@@ -470,7 +472,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
+            // Force Fallback for notorious architecture blockers (including Bilibili's simulated landscape)
+            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap() || isSpecialApp_Bilibili()) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -554,6 +557,13 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 #endif
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
+                    
+                    // Double Insurance for Bilibili true landscape: force portrait might be ignored, so pop VC directly.
+                    if (isSpecialApp_Bilibili()) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
+                        });
+                    }
                 } else {
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
