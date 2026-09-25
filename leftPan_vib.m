@@ -310,6 +310,27 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
+static void unlockRNOrientation(void) {
+    Class oriClass = NSClassFromString(@"Orientation");
+    if (oriClass) {
+        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
+        Method m = class_getClassMethod(oriClass, setOriSel);
+        if (m) {
+            void (*impl)(id, SEL, UIInterfaceOrientationMask) = (void (*)(id, SEL, UIInterfaceOrientationMask))method_getImplementation(m);
+            if (impl) {
+                impl(oriClass, setOriSel, UIInterfaceOrientationMaskAll);
+            }
+        }
+        SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
+        if ([oriClass respondsToSelector:lockPortSel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [oriClass performSelector:lockPortSel];
+            #pragma clang diagnostic pop
+        }
+    }
+}
+
 // Universal exit full-screen mode for React Native (RCTVideo), Bilibili, and native players
 + (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
@@ -401,24 +422,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
     }
     
-    // 3. React Native Orientation Locker Bypass
-    Class oriClass = NSClassFromString(@"Orientation");
-    if (oriClass) {
-        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
-        if ([oriClass respondsToSelector:setOriSel]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [oriClass performSelector:setOriSel withObject:(id)(intptr_t)UIInterfaceOrientationMaskAll];
-            #pragma clang diagnostic pop
-        }
-        SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
-        if ([oriClass respondsToSelector:lockPortSel]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [oriClass performSelector:lockPortSel];
-            #pragma clang diagnostic pop
-        }
-    }
+    // 3. React Native Orientation Locker Bypass (Safe C-pointer Call)
+    unlockRNOrientation();
     
     // 4. Native UIButton search inside player controls
     if (!didTrigger) {
@@ -438,13 +443,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         CGPoint ptTopLeft = CGPointMake(safeLeft + 35.0, safeTop + 25.0);
         
-        // Wake up controls with center touch
         CGFloat screenW = window.bounds.size.width;
         CGFloat screenH = window.bounds.size.height;
         CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
         [self dispatchTouchToWindow:window atPoint:centerPt];
         
-        // Direct touch dispatch to top-left back position
         [self dispatchTouchToWindow:window atPoint:ptTopLeft];
         didTrigger = YES;
         
@@ -559,23 +562,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 }
 
 - (void)forcePortraitOrientation {
-    Class oriClass = NSClassFromString(@"Orientation");
-    if (oriClass) {
-        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
-        if ([oriClass respondsToSelector:setOriSel]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [oriClass performSelector:setOriSel withObject:(id)(intptr_t)UIInterfaceOrientationMaskAll];
-            #pragma clang diagnostic pop
-        }
-        SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
-        if ([oriClass respondsToSelector:lockPortSel]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [oriClass performSelector:lockPortSel];
-            #pragma clang diagnostic pop
-        }
-    }
+    unlockRNOrientation();
 
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
