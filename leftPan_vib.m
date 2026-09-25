@@ -3,7 +3,6 @@
 
 // =========================================================
 // DEBUG SWITCH: Set to 1 to enable Full Hierarchy Logging, 0 for Release
-// (Amap Round-Robin probe logs to Clipboard automatically regardless)
 // =========================================================
 #define ENABLE_DEBUG_LOGGING 0
 
@@ -21,7 +20,6 @@
 #define kLPVFallbackMinFlickTranslation 20.0         
 
 static char kWindowHelperKey;
-static NSInteger sAmapMethodIndex = 0; // Round-robin counter for Amap navigation probe
 
 #pragma mark - Special App Whitelist
 
@@ -196,9 +194,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isSpecialApp_Amap()) {
         UIWindow *win = window ?: topVC.view.window ?: [self resolveKeyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
-            return NO; // Strictly suppress on main map screen
+            return NO; // Suppress gesture on root map
         }
-        return YES; // Allow in subpages and navigation
+        return YES; // Allow in subpages, settings, and navigation
     }
     
     UIViewController *current = topVC;
@@ -213,7 +211,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Amap Precision Touch Probing Engine
+#pragma mark - Amap Precision Return Engine
 
 + (CGFloat)getSafeAreaTop:(UIWindow *)window {
     if (@available(iOS 11.0, *)) {
@@ -232,115 +230,71 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
 }
 
-+ (UIView *)findViewWithKeywords:(NSArray<NSString *> *)keywords inView:(UIView *)root targetWin:(UIWindow *)targetWin foundText:(NSString **)outText {
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
-    while (queue.count > 0) {
-        UIView *v = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        
-        if (v.hidden || v.alpha < 0.05) continue;
-        
-        if ([v respondsToSelector:@selector(text)]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            id txt = [v performSelector:@selector(text)];
-            #pragma clang diagnostic pop
-            if ([txt isKindOfClass:[NSString class]]) {
-                for (NSString *kw in keywords) {
-                    if ([(NSString *)txt containsString:kw]) {
-                        if (outText) *outText = (NSString *)txt;
-                        return v;
++ (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
+    UIWindow *targetWin = window ?: topVC.view.window ?: [self resolveKeyWindow];
+    if (!targetWin) return;
+
+    CGFloat screenH = targetWin.bounds.size.height;
+    CGFloat safeTop = [self getSafeAreaTop:targetWin];
+
+    CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
+    CGPoint ptBottomLeft = CGPointMake(50.0, screenH - 48.0);
+
+    // 1. Runtime inspection of active navigation managers
+    BOOL isNavigating = NO;
+    Class naviManager = NSClassFromString(@"NMNaviManager");
+    if (naviManager && [naviManager respondsToSelector:@selector(sharedInstance)]) {
+        id mgr = [naviManager performSelector:@selector(sharedInstance)];
+        if (mgr) {
+            for (NSString *s in @[@"isNavi", @"isNavigating", @"isInNavi", @"isNaviStarted"]) {
+                SEL sel = NSSelectorFromString(s);
+                if ([mgr respondsToSelector:sel]) {
+                    BOOL (*func)(id, SEL) = (BOOL (*)(id, SEL))[mgr methodForSelector:sel];
+                    if (func(mgr, sel)) {
+                        isNavigating = YES;
+                        break;
                     }
                 }
             }
         }
-        
-        if (v.accessibilityLabel) {
-            for (NSString *kw in keywords) {
-                if ([v.accessibilityLabel containsString:kw]) {
-                    if (outText) *outText = v.accessibilityLabel;
-                    return v;
+    }
+    if (!isNavigating) {
+        Class driveMgr = NSClassFromString(@"AMapNaviDriveManager");
+        if (driveMgr && [driveMgr respondsToSelector:@selector(sharedInstance)]) {
+            id mgr = [driveMgr performSelector:@selector(sharedInstance)];
+            if (mgr && [mgr respondsToSelector:NSSelectorFromString(@"isNaviStarted")]) {
+                BOOL (*func)(id, SEL) = (BOOL (*)(id, SEL))[mgr methodForSelector:NSSelectorFromString(@"isNaviStarted")];
+                if (func(mgr, NSSelectorFromString(@"isNaviStarted"))) {
+                    isNavigating = YES;
                 }
             }
         }
-        
-        [queue addObjectsFromArray:v.subviews];
     }
-    return nil;
-}
 
-+ (void)probeAmapReturnMethods:(UIViewController *)topVC window:(UIWindow *)window {
-    NSInteger methodId = sAmapMethodIndex % 4;
-    sAmapMethodIndex++;
-
-    UIWindow *targetWin = window ?: topVC.view.window ?: [self resolveKeyWindow];
-    CGFloat screenW = targetWin.bounds.size.width;
-    CGFloat screenH = targetWin.bounds.size.height;
-    CGFloat safeTop = [self getSafeAreaTop:targetWin];
-
-    NSMutableString *log = [NSMutableString stringWithFormat:@"=== LPV AMAP PROBE [Method #%ld] ===\n", (long)methodId];
-    [log appendFormat:@"Time: %@\n", [NSDate date]];
-    [log appendFormat:@"Screen: {%.0f, %.0f}, SafeTop: %.0f\n", screenW, screenH, safeTop];
-
-    switch (methodId) {
-        case 0: {
-            // Proven Method #1 from V56: Top-Left Header Back
-            CGPoint pt = CGPointMake(25.0, safeTop + 22.0);
-            [log appendFormat:@"Mode: Top-Left Header Back (Settings/Subpage Base)\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
-            UIView *hit = [targetWin hitTest:pt withEvent:nil];
-            [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
-            [self dispatchTouchToWindow:targetWin atPoint:pt];
-            [log appendString:@"Dispatched touchesBegan/touchesEnded\n"];
-            break;
-        }
-        case 1: {
-            // Navigation Bottom-Right Exit Button
-            CGPoint pt = CGPointMake(screenW - 50.0, screenH - 48.0);
-            [log appendFormat:@"Mode: Navigation Bottom-Right Exit\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
-            UIView *hit = [targetWin hitTest:pt withEvent:nil];
-            [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
-            [self dispatchTouchToWindow:targetWin atPoint:pt];
-            [log appendString:@"Dispatched touchesBegan/touchesEnded\n"];
-            break;
-        }
-        case 2: {
-            // Navigation Bottom-Left Exit Button
-            CGPoint pt = CGPointMake(50.0, screenH - 48.0);
-            [log appendFormat:@"Mode: Navigation Bottom-Left Exit\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
-            UIView *hit = [targetWin hitTest:pt withEvent:nil];
-            [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
-            [self dispatchTouchToWindow:targetWin atPoint:pt];
-            [log appendString:@"Dispatched touchesBegan/touchesEnded\n"];
-            break;
-        }
-        case 3: {
-            // Semantic Text Hunter for Exit/Back Keywords
-            [log appendString:@"Mode: Semantic Text Hunter\n"];
-            NSString *matchedText = nil;
-            NSArray *keywords = @[@"退出", @"结束", @"返回", @"取消"];
-            UIView *foundView = [self findViewWithKeywords:keywords inView:targetWin targetWin:targetWin foundText:&matchedText];
-            
-            if (foundView) {
-                CGRect absRect = [foundView convertRect:foundView.bounds toView:targetWin];
-                // Pure inline arithmetic avoiding CoreGraphics framework symbol linkage
-                CGPoint centerPt = CGPointMake(absRect.origin.x + absRect.size.width * 0.5,
-                                               absRect.origin.y + absRect.size.height * 0.5);
-                [log appendFormat:@"Found Text: \"%@\" in View: %@\nAt Center: {%.1f, %.1f}\n", matchedText, NSStringFromClass([foundView class]), centerPt.x, centerPt.y];
-                [self dispatchTouchToWindow:targetWin atPoint:centerPt];
-                [log appendString:@"Dispatched touchesBegan/touchesEnded to matched text center\n"];
-            } else {
-                CGPoint pt = CGPointMake(screenW - 30.0, safeTop + 22.0);
-                [log appendFormat:@"No matching keywords found. Fallback to Top-Right Close {%.1f, %.1f}\n", pt.x, pt.y];
-                [self dispatchTouchToWindow:targetWin atPoint:pt];
-                [log appendString:@"Dispatched touchesBegan/touchesEnded to Top-Right\n"];
+    // 2. View Hierarchy Verification:
+    // In Settings/Subpage, hitTest at ptTopLeft hits a distinct back button (frame width <= 80)
+    // In Navigation, the top area is covered by the oversized guidance banner (width > 300)
+    if (!isNavigating) {
+        UIView *hitTop = [targetWin hitTest:ptTopLeft withEvent:nil];
+        BOOL isSmallButton = NO;
+        UIView *curr = hitTop;
+        for (int i = 0; i < 4 && curr; i++) {
+            CGRect f = [curr convertRect:curr.bounds toView:targetWin];
+            if (f.size.width > 0 && f.size.width <= 80.0 && f.size.height <= 80.0) {
+                isSmallButton = YES;
+                break;
             }
-            break;
+            curr = curr.superview;
+        }
+        if (isSmallButton) {
+            // Standard back navigation for Settings and subpages
+            [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
+            return;
         }
     }
 
-    [log appendString:@"=====================================\n"];
-    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-    pasteboard.string = log;
+    // 3. Navigation exit trigger (Bottom-left exit button)
+    [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
@@ -634,7 +588,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                     [self forcePortraitOrientation];
                 } else {
                     if (isSpecialApp_Amap()) {
-                        [LeftPanWindowHelper probeAmapReturnMethods:topVC window:self.window];
+                        [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
                         return;
                     }
                     [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
