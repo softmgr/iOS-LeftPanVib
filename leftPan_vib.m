@@ -199,7 +199,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
-    // Always permit gesture if physically held horizontally
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
     if (UIDeviceOrientationIsLandscape(devOri)) {
         return YES;
@@ -219,27 +218,22 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 #pragma mark - Universal Video Player & Fake Landscape Engine
 
-// Comprehensive orientation check: combines system, hardware gyro, and visual transform layers
 + (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
     
-    // 1. Check physical hardware orientation
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
     if (UIDeviceOrientationIsLandscape(devOri)) {
         return YES;
     }
     
-    // 2. Check window bounds
     if (window && window.bounds.size.width > window.bounds.size.height) {
         return YES;
     }
     
-    // 3. Check view controller bounds
     if (topVC && topVC.isViewLoaded && topVC.view.bounds.size.width > topVC.view.bounds.size.height) {
         return YES;
     }
     
-    // 4. Scan for 90-degree rotated player container views
     if (window) {
         NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
         int count = 0;
@@ -261,7 +255,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Safely click the player's internal exit-fullscreen button without hitting outer page buttons
 + (BOOL)searchAndClickPlayerExitButton:(UIView *)root window:(UIWindow *)window {
     if (!root) return NO;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -270,7 +263,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         UIView *v = queue.firstObject;
         [queue removeObjectAtIndex:0];
         
-        // Critical: Never traverse explicitly hidden outer containers (like VDCoverView)
         if (v.hidden) continue;
         
         NSString *cls = NSStringFromClass([v class]);
@@ -282,7 +274,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             UIButton *btn = (UIButton *)v;
             CGRect absFrame = [btn convertRect:btn.bounds toView:window];
             
-            // Check whether button belongs to a player control tree
             UIView *p = btn.superview;
             BOOL insidePlayerControl = NO;
             while (p && p != root) {
@@ -295,7 +286,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             }
             
             if (insidePlayerControl) {
-                // Top-Left Back / Exit Fullscreen Button in player header
                 if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
                     absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
                     btn.enabled = YES;
@@ -312,11 +302,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Universally exit full-screen video mode safely (NEVER pop the view controller!)
-+ (void)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
++ (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
     
-    // 1. Safe Player Method Reflection (Exclusively full-screen setters, NO backAction!)
     NSArray *safeExitSels = @[
         @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
         @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
@@ -359,13 +347,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (didTrigger) break;
     }
     
-    // 2. Safe Button Search inside Player View
     UIView *searchRoot = topVC.view ?: window;
-    if (searchRoot) {
+    if (!didTrigger && searchRoot) {
         didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
     }
     
-    // 3. Fallback when controls are faded out: Tap center to reveal controls, then click button
     if (!didTrigger && searchRoot) {
         CGPoint center = CGPointMake(searchRoot.bounds.size.width * 0.5, searchRoot.bounds.size.height * 0.5);
         UIView *hit = [searchRoot hitTest:center withEvent:nil];
@@ -374,10 +360,10 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             [hit touchesEnded:[NSSet set] withEvent:nil];
         }
         
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self searchAndClickPlayerExitButton:searchRoot window:window];
-        });
+        didTrigger = [self searchAndClickPlayerExitButton:searchRoot window:window];
     }
+    
+    return didTrigger;
 }
 
 #pragma mark - Amap Dual-Strike Return Engine
@@ -448,7 +434,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
 }
 
-// Targeted Interception: Isolate WeChat Mini Programs/Skyline to prevent white-screen crashes
 + (BOOL)isForbiddenAppViewController:(UIViewController *)vc {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -469,7 +454,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Deeply scan view hierarchy to block third-party game rendering engines
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
@@ -680,12 +664,19 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    // 1. In Landscape / Fullscreen video mode: ONLY exit full-screen to portrait.
-                    // Absolutely DO NOT pop or dismiss the view controller here!
-                    [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
+                    BOOL exitedVideo = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
+                    
+                    // Fallback: If no video was exited (e.g. user lying sideways in bed browsing a normal list)
+                    // smoothly pop/close the page as expected!
+                    if (!exitedVideo && !isLandscape) {
+                        if (isSpecialApp_Amap()) {
+                            [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
+                        } else {
+                            [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
+                        }
+                    }
                 } else {
-                    // 2. In Standard Portrait mode: Normal page close/pop.
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
                     } else {
