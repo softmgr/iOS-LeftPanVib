@@ -335,6 +335,37 @@ static void unlockRNOrientation(void) {
     }
 }
 
+// Traverse view tree and clamp overflowing video containers to portrait width
++ (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
+    if (!root || targetW <= 0) return;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+    int count = 0;
+    
+    while (queue.count > 0 && count < 250) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        count++;
+        
+        CGRect f = v.frame;
+        // Target views that are wider than portrait screen bounds (e.g. 926 > 428)
+        if (f.size.width > targetW + 5.0) {
+            CGFloat newW = targetW;
+            CGFloat newH = f.size.height;
+            
+            // If it's a full-screen height video player container, adapt to standard 16:9 inline player height
+            if (newH > targetW * 0.70) {
+                newH = targetW * (9.0 / 16.0);
+            }
+            
+            v.frame = CGRectMake(0, f.origin.y, newW, newH);
+            v.bounds = CGRectMake(0, 0, newW, newH);
+            [v setNeedsLayout];
+            [v layoutIfNeeded];
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+}
+
 // Universal exit full-screen mode for React Native (RCTVideo), Bilibili, and native players
 + (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
@@ -404,7 +435,6 @@ static void unlockRNOrientation(void) {
             }
             if (didTrigger) break;
             
-            // Critical: Matches React Native's standard 'setIsFullscreen:' setter
             for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullscreen:", @"setFullScreen:"]) {
                 SEL sel = NSSelectorFromString(selName);
                 if ([v respondsToSelector:sel]) {
@@ -562,7 +592,7 @@ static void unlockRNOrientation(void) {
     return NO;
 }
 
-// Breakthrough Force Rotation Engine (Bypasses all app/framework orientation locks)
+// Multi-Stage Force Rotation & Dimensions Engine
 - (void)forcePortraitOrientation {
     g_forceAllowPortrait = YES;
     unlockRNOrientation();
@@ -573,7 +603,7 @@ static void unlockRNOrientation(void) {
         if (self.window.rootViewController) [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
     }
 
-    // 1. Invocation-based low-level private orientation assignment (bypasses iOS 16 KVC traps)
+    // 1. Invocation-based low-level private orientation assignment
     @try {
         SEL setOriSel = NSSelectorFromString(@"setOrientation:");
         if ([[UIDevice currentDevice] respondsToSelector:setOriSel]) {
@@ -614,8 +644,33 @@ static void unlockRNOrientation(void) {
         [UIViewController attemptRotationToDeviceOrientation];
     }
 
-    // 3. Keep orientation privilege alive across the full animation window
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 3. Multi-Stage Pipeline: As window rotates, synchronize React Native Dimensions and clamp layout
+    NSArray *intervals = @[@(0.10), @(0.25), @(0.45), @(0.70)];
+    for (NSNumber *delay in intervals) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([delay doubleValue] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+            CGFloat screenW = win ? win.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
+            CGFloat screenH = win ? win.bounds.size.height : [UIScreen mainScreen].bounds.size.height;
+            CGFloat targetW = MIN(screenW, screenH);
+
+            // Re-broadcast notifications as scene updates to refresh RN Dimensions cache
+            [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidChangeStatusBarOrientationNotification object:nil];
+            #pragma clang diagnostic pop
+
+            // Clamp any overflowing video containers and re-layout
+            if (win) {
+                [LeftPanWindowHelper correctLandscapeViewHierarchy:win targetWidth:targetW];
+                [win setNeedsLayout];
+                [win layoutIfNeeded];
+            }
+        });
+    }
+
+    // 4. Release orientation privilege after transition settles
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         g_forceAllowPortrait = NO;
         if (@available(iOS 16.0, *)) {
             if (topVC) [topVC setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -791,7 +846,6 @@ static void unlockRNOrientation(void) {
                     BOOL videoHandled = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
                     
-                    // Watchdog Fallback: If not handled by video exit, pop the landscape container directly after 150ms
                     if (!videoHandled && !isSpecialApp_Amap()) {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                             UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
@@ -922,6 +976,28 @@ static BOOL swiz_VC_shouldAutorotate(UIViewController *self, SEL _cmd) {
     return YES;
 }
 
+static UIDeviceOrientation (*orig_Device_orientation)(id, SEL);
+static UIDeviceOrientation swiz_Device_orientation(UIDevice *self, SEL _cmd) {
+    if (g_forceAllowPortrait) {
+        return UIDeviceOrientationPortrait;
+    }
+    if (orig_Device_orientation) {
+        return orig_Device_orientation(self, _cmd);
+    }
+    return UIDeviceOrientationPortrait;
+}
+
+static UIInterfaceOrientation (*orig_App_statusBarOrientation)(id, SEL);
+static UIInterfaceOrientation swiz_App_statusBarOrientation(UIApplication *self, SEL _cmd) {
+    if (g_forceAllowPortrait) {
+        return UIInterfaceOrientationPortrait;
+    }
+    if (orig_App_statusBarOrientation) {
+        return orig_App_statusBarOrientation(self, _cmd);
+    }
+    return UIInterfaceOrientationPortrait;
+}
+
 static void attachHelperToWindow(UIWindow *window) {
     if (!window || ![window isKindOfClass:[UIWindow class]]) return;
     if (!objc_getAssociatedObject(window, &kWindowHelperKey)) {
@@ -937,7 +1013,7 @@ static void swiz_UIWindow_makeKeyAndVisible(UIWindow *self, SEL _cmd) {
 }
 
 __attribute__((constructor)) static void init_leftPanGlobal(void) {
-    // 1. Swizzle UIViewController orientation privileges to break app-level portrait locks
+    // 1. Swizzle UIViewController
     Class vcClass = [UIViewController class];
     Method mSupported = class_getInstanceMethod(vcClass, @selector(supportedInterfaceOrientations));
     if (mSupported) {
@@ -950,7 +1026,23 @@ __attribute__((constructor)) static void init_leftPanGlobal(void) {
         method_setImplementation(mAuto, (IMP)swiz_VC_shouldAutorotate);
     }
 
-    // 2. Global Window Injection
+    // 2. Swizzle UIDevice Orientation
+    Class devClass = [UIDevice class];
+    Method mDevOri = class_getInstanceMethod(devClass, @selector(orientation));
+    if (mDevOri) {
+        orig_Device_orientation = (UIDeviceOrientation (*)(id, SEL))method_getImplementation(mDevOri);
+        method_setImplementation(mDevOri, (IMP)swiz_Device_orientation);
+    }
+
+    // 3. Swizzle UIApplication StatusBarOrientation
+    Class appClass = [UIApplication class];
+    Method mAppOri = class_getInstanceMethod(appClass, @selector(statusBarOrientation));
+    if (mAppOri) {
+        orig_App_statusBarOrientation = (UIInterfaceOrientation (*)(id, SEL))method_getImplementation(mAppOri);
+        method_setImplementation(mAppOri, (IMP)swiz_App_statusBarOrientation);
+    }
+
+    // 4. Global Window Injection
     [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
