@@ -175,7 +175,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (v.hidden || v.alpha < 0.05) continue;
         
         NSString *cls = NSStringFromClass([v class]);
-        // Identify signature widgets of Amap's root map home screen
         if ([cls isEqualToString:@"WINTabBar"] || 
             [cls isEqualToString:@"WINQuickSearchBarV2"] ||
             [cls isEqualToString:@"AMapUIWaterFallContentSlidableView"]) {
@@ -195,9 +194,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isSpecialApp_Amap()) {
         UIWindow *win = window ?: topVC.view.window ?: [self resolveKeyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
-            return NO; // Suppress gesture on root map home page to prevent accidental app exits
+            return NO; // Suppress gesture on root map to avoid exiting app
         }
-        return YES; // Allow in subpages, settings, and active navigation
+        return YES; // Enable custom LPV back in Subpages and Navigation
     }
     
     UIViewController *current = topVC;
@@ -223,6 +222,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return 20.0;
 }
 
++ (CGFloat)getSafeAreaBottom:(UIWindow *)window {
+    if (@available(iOS 11.0, *)) {
+        if (window && window.safeAreaInsets.bottom > 0) {
+            return window.safeAreaInsets.bottom;
+        }
+    }
+    return 0.0;
+}
+
 + (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
     UIView *hit = [window hitTest:pt withEvent:nil];
     if (hit) {
@@ -231,46 +239,73 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
 }
 
-// 100% accurate Navigation vs Subpage differentiator by analyzing Amap's HUD widget layer
-+ (BOOL)isAmapNavigatingMode:(UIWindow *)window {
-    if (!window) return NO;
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
-    while (queue.count > 0) {
-        UIView *v = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        
-        NSString *cls = NSStringFromClass([v class]);
-        // MapWidgetContainerView is Amap's dedicated layer for Heads-Up Display widgets
-        if ([cls isEqualToString:@"MapWidgetContainerView"]) {
-            int visibleCount = 0;
-            for (UIView *sub in v.subviews) {
-                // Count active HUD components (Compass, Weather, ScaleLine, Traffic). 
-                // Navigation mode spawns multiple visible widgets. Subpages clear them.
-                if (!sub.hidden && sub.alpha > 0.01) {
-                    visibleCount++;
-                }
-            }
-            return (visibleCount >= 2);
-        }
-        [queue addObjectsFromArray:v.subviews];
-    }
-    return NO;
-}
-
 + (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
     UIWindow *targetWin = window ?: topVC.view.window ?: [self resolveKeyWindow];
     if (!targetWin) return;
 
+    CGFloat screenW = targetWin.bounds.size.width;
     CGFloat screenH = targetWin.bounds.size.height;
     CGFloat safeTop = [self getSafeAreaTop:targetWin];
+    CGFloat safeBottom = [self getSafeAreaBottom:targetWin];
 
-    if ([self isAmapNavigatingMode:targetWin]) {
-        // Navigation Mode: Accurately strike the Bottom-Left Exit Navigation button
-        CGPoint ptBottomLeft = CGPointMake(50.0, screenH - 48.0);
+    CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
+    CGPoint ptBottomLeft = CGPointMake(50.0, screenH - safeBottom - 48.0);
+
+    // =========================================================================
+    // Core Logic 1: Center Physical Hit-Test (Immune to recycled off-screen views)
+    // =========================================================================
+    CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
+    UIView *centerHit = [targetWin hitTest:centerPt withEvent:nil];
+    
+    BOOL isNavigating = YES; // Assume Navigation (Map) by default
+    UIView *curr = centerHit;
+    while (curr) {
+        NSString *cls = NSStringFromClass([curr class]);
+        // If the physical center of the screen is covered by a list, it's a Subpage/Settings.
+        if ([cls containsString:@"ScrollView"] || 
+            [cls containsString:@"ListView"] || 
+            [cls containsString:@"TableView"] || 
+            [cls containsString:@"SheetsView"]) {
+            isNavigating = NO;
+            break;
+        }
+        curr = curr.superview;
+    }
+
+    // =========================================================================
+    // Core Logic 2: Top-Left Actionability Validation (Avoid fake buttons)
+    // =========================================================================
+    UIView *hitTopLeft = [targetWin hitTest:ptTopLeft withEvent:nil];
+    BOOL topLeftHasAction = NO;
+    curr = hitTopLeft;
+    for (int i = 0; i < 5 && curr; i++) {
+        // Validate UIControl targets
+        if ([curr isKindOfClass:[UIControl class]] && ((UIControl *)curr).allTargets.count > 0) {
+            topLeftHasAction = YES; 
+            break;
+        }
+        // Validate Tap Gesture Recognizers (AJX native routing method)
+        for (UIGestureRecognizer *gr in curr.gestureRecognizers) {
+            if ([gr isKindOfClass:[UITapGestureRecognizer class]] || [NSStringFromClass([gr class]) containsString:@"Tap"]) {
+                topLeftHasAction = YES; 
+                break;
+            }
+        }
+        if (topLeftHasAction) break;
+        curr = curr.superview;
+    }
+
+    // Decision Making:
+    // If the top-left item is just an inactive turn-icon (has no actionable targets), 
+    // it's a dead end. We MUST be in Navigation mode, so we force Bottom-Left Exit.
+    if (!topLeftHasAction) {
+        isNavigating = YES;
+    }
+
+    // Execute precision Touch UI-Bot injection
+    if (isNavigating) {
         [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
     } else {
-        // Subpage/Settings Mode: Strike the standard Top-Left Header Back button
-        CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
         [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
     }
 }
