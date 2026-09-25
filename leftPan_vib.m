@@ -256,38 +256,131 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-+ (CGFloat)getSafeAreaTop:(UIWindow *)window {
-    if (@available(iOS 11.0, *)) {
-        if (window && window.safeAreaInsets.top > 0) {
-            return window.safeAreaInsets.top;
-        }
-    }
-    return 20.0;
-}
-
-+ (CGFloat)getSafeAreaBottom:(UIWindow *)window {
-    if (@available(iOS 11.0, *)) {
-        if (window && window.safeAreaInsets.bottom > 0) {
-            return window.safeAreaInsets.bottom;
-        }
-    }
-    return 0.0;
-}
-
-// React Native & UIKit Synthetic Tap Dispatcher
-+ (void)simulateTapAtPoint:(CGPoint)pt inWindow:(UIWindow *)window {
+// React Native Direct Bridge Notification Dispatcher
+static void notifyReactNativeOrientationBridge(UIWindow *window) {
     if (!window) return;
-    UIView *hitView = [window hitTest:pt withEvent:nil];
-    if (!hitView) return;
+    UIView *rootView = nil;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if ([v isKindOfClass:NSClassFromString(@"RCTRootView")]) {
+            rootView = v;
+            break;
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    if (!rootView) return;
 
-    // 1. Native UIControl click
-    if ([hitView isKindOfClass:[UIControl class]]) {
-        UIControl *ctrl = (UIControl *)hitView;
-        [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
+    id bridge = nil;
+    @try {
+        bridge = [rootView valueForKey:@"bridge"];
+    } @catch (NSException *e) {}
+
+    if (bridge) {
+        @try {
+            SEL enqueueSel = NSSelectorFromString(@"enqueueJSCall:method:args:completion:");
+            if ([bridge respondsToSelector:enqueueSel]) {
+                NSMethodSignature *sig = [bridge methodSignatureForSelector:enqueueSel];
+                if (sig && sig.numberOfArguments == 6) {
+                    void (^emitEvent)(NSString *, NSString *) = ^(NSString *event, NSString *val) {
+                        NSArray *args = @[event, @{@"orientation": val, @"deviceOrientation": val}];
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        [inv setSelector:enqueueSel];
+                        [inv setTarget:bridge];
+                        NSString *mod = @"RCTDeviceEventEmitter";
+                        NSString *meth = @"emit";
+                        [inv setArgument:&mod atIndex:2];
+                        [inv setArgument:&meth atIndex:3];
+                        [inv setArgument:&args atIndex:4];
+                        void *nilBlock = NULL;
+                        [inv setArgument:&nilBlock atIndex:5];
+                        [inv invoke];
+                    };
+                    emitEvent(@"orientationDidChange", @"PORTRAIT");
+                    emitEvent(@"deviceOrientationDidChange", @"PORTRAIT");
+                }
+            }
+        } @catch (NSException *e) {}
+
+        @try {
+            id oriModule = nil;
+            if ([bridge respondsToSelector:NSSelectorFromString(@"moduleForName:")]) {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                oriModule = [bridge performSelector:NSSelectorFromString(@"moduleForName:") withObject:@"OrientationLocker"];
+                if (!oriModule) {
+                    oriModule = [bridge performSelector:NSSelectorFromString(@"moduleForName:") withObject:@"Orientation"];
+                }
+                #pragma clang diagnostic pop
+            }
+            if (oriModule) {
+                for (NSString *s in @[@"lockToPortrait", @"unlockAllOrientations"]) {
+                    SEL sel = NSSelectorFromString(s);
+                    if ([oriModule respondsToSelector:sel]) {
+                        #pragma clang diagnostic push
+                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                        [oriModule performSelector:sel];
+                        #pragma clang diagnostic pop
+                    }
+                }
+            }
+        } @catch (NSException *e) {}
+    }
+}
+
+// Precision Target Discovery: Locates the ACTUAL return button view without blind-coordinate guesswork
++ (UIView *)findActualPlayerBackButton:(UIView *)root window:(UIWindow *)window {
+    if (!root || !window) return nil;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+    UIView *bestCandidate = nil;
+    CGFloat minDistance = 9999.0;
+    
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (v.hidden || v.alpha < 0.1) continue;
+        
+        CGRect r = [v convertRect:v.bounds toView:window];
+        
+        // Match specific small button bounds in upper-left corner
+        if (r.origin.x >= 15.0 && r.origin.x <= 130.0 &&
+            r.origin.y >= 20.0 && r.origin.y <= 160.0 &&
+            r.size.width >= 18.0 && r.size.width <= 85.0 &&
+            r.size.height >= 18.0 && r.size.height <= 85.0) {
+            
+            BOOL isLikelyButton = NO;
+            if ([v isKindOfClass:[UIControl class]]) isLikelyButton = YES;
+            if (v.gestureRecognizers.count > 0) isLikelyButton = YES;
+            if (v.subviews.count <= 3) isLikelyButton = YES;
+            
+            if (isLikelyButton) {
+                CGFloat dx = r.origin.x - 55.0;
+                CGFloat dy = r.origin.y - 65.0;
+                CGFloat dist = sqrt(dx * dx + dy * dy);
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    bestCandidate = v;
+                }
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return bestCandidate;
+}
+
+// Precision Tap Engine: Only dispatches tap on verified button target, NEVER on video background
++ (void)simulateTapOnVerifiedView:(UIView *)targetView inWindow:(UIWindow *)window {
+    if (!targetView || !window) return;
+    CGRect r = [targetView convertRect:targetView.bounds toView:window];
+    CGPoint pt = CGPointMake(r.origin.x + r.size.width * 0.5, r.origin.y + r.size.height * 0.5);
+
+    if ([targetView isKindOfClass:[UIControl class]]) {
+        [(UIControl *)targetView sendActionsForControlEvents:UIControlEventTouchUpInside];
+        return;
     }
 
-    // 2. Attached UIGestureRecognizers trigger (e.g. RNGestureHandler)
-    UIView *curr = hitView;
+    UIView *curr = targetView;
     while (curr && curr != window) {
         for (UIGestureRecognizer *gr in curr.gestureRecognizers) {
             if ([gr isKindOfClass:[UITapGestureRecognizer class]]) {
@@ -301,6 +394,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                             [target performSelector:action withObject:gr];
                             #pragma clang diagnostic pop
+                            return;
                         }
                     }
                 } @catch (NSException *e) {}
@@ -309,7 +403,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         curr = curr.superview;
     }
 
-    // 3. React Native RCTTouchHandler pipeline bypass (Paper & Fabric)
+    // React Native TouchHandler Dispatch
     UIGestureRecognizer *touchHandler = nil;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
     while (queue.count > 0) {
@@ -330,33 +424,15 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
     @try {
         UITouch *touch = [[UITouch alloc] init];
-
         if ([touch respondsToSelector:@selector(setWindow:)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             [touch performSelector:@selector(setWindow:) withObject:window];
+            [touch performSelector:@selector(setView:) withObject:targetView];
             #pragma clang diagnostic pop
         } else {
             [touch setValue:window forKey:@"_window"];
-        }
-
-        if ([touch respondsToSelector:@selector(setView:)]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [touch performSelector:@selector(setView:) withObject:hitView];
-            #pragma clang diagnostic pop
-        } else {
-            [touch setValue:hitView forKey:@"_view"];
-        }
-
-        if ([touch respondsToSelector:@selector(setTapCount:)]) {
-            NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setTapCount:)];
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setSelector:@selector(setTapCount:)];
-            [inv setTarget:touch];
-            NSUInteger tc = 1;
-            [inv setArgument:&tc atIndex:2];
-            [inv invoke];
+            [touch setValue:targetView forKey:@"_view"];
         }
 
         if ([touch respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
@@ -372,7 +448,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
         }
 
-        // Send Began
         if ([touch respondsToSelector:@selector(setPhase:)]) {
             NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setPhase:)];
             NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
@@ -381,8 +456,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             UITouchPhase phase = UITouchPhaseBegan;
             [inv setArgument:&phase atIndex:2];
             [inv invoke];
-        } else {
-            [touch setValue:@(UITouchPhaseBegan) forKey:@"_phase"];
         }
 
 #pragma clang diagnostic push
@@ -392,7 +465,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
 #pragma clang diagnostic pop
 
-        // Send Ended after 35ms
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if ([touch respondsToSelector:@selector(setPhase:)]) {
                 NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setPhase:)];
@@ -402,8 +474,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 UITouchPhase phase = UITouchPhaseEnded;
                 [inv setArgument:&phase atIndex:2];
                 [inv invoke];
-            } else {
-                [touch setValue:@(UITouchPhaseEnded) forKey:@"_phase"];
             }
 
 #pragma clang diagnostic push
@@ -440,7 +510,7 @@ static void unlockRNOrientation(void) {
     }
 }
 
-// Clamp overflowing landscape views and adapt subviews into portrait bounds
+// Right-Edge Magnetic Snap & Layout Fitting Engine
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -466,7 +536,7 @@ static void unlockRNOrientation(void) {
             [v layoutIfNeeded];
         }
 
-        // 2. Pull subviews that are overflowing past the right edge back into bounds
+        // 2. Right-Edge Magnetic Snap: Pull subviews floating off-screen back to visible edge
         if (f.origin.x + f.size.width > targetW + 2.0 && f.size.width < targetW) {
             CGFloat newX = targetW - f.size.width - 12.0;
             if (newX < 0) newX = 0;
@@ -624,6 +694,24 @@ static void unlockRNOrientation(void) {
 
 #pragma mark - Amap Dual-Strike Return Engine
 
++ (CGFloat)getSafeAreaTop:(UIWindow *)window {
+    if (@available(iOS 11.0, *)) {
+        if (window && window.safeAreaInsets.top > 0) {
+            return window.safeAreaInsets.top;
+        }
+    }
+    return 20.0;
+}
+
++ (CGFloat)getSafeAreaBottom:(UIWindow *)window {
+    if (@available(iOS 11.0, *)) {
+        if (window && window.safeAreaInsets.bottom > 0) {
+            return window.safeAreaInsets.bottom;
+        }
+    }
+    return 0.0;
+}
+
 + (void)dispatchTouchToWindow:(UIWindow *)window atPoint:(CGPoint)pt {
     UIView *hit = [window hitTest:pt withEvent:nil];
     if (hit) {
@@ -714,7 +802,7 @@ static void unlockRNOrientation(void) {
     return NO;
 }
 
-// Multi-Stage Force Rotation & Control Re-layout Engine
+// Multi-Stage Force Rotation & Precision Sync Engine
 - (void)forcePortraitOrientation {
     g_forceAllowPortrait = YES;
     unlockRNOrientation();
@@ -781,6 +869,9 @@ static void unlockRNOrientation(void) {
             [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidChangeStatusBarOrientationNotification object:nil];
             #pragma clang diagnostic pop
 
+            // React Native bridge notification
+            notifyReactNativeOrientationBridge(win);
+
             if (win) {
                 [LeftPanWindowHelper correctLandscapeViewHierarchy:win targetWidth:targetW];
                 [win setNeedsLayout];
@@ -789,26 +880,16 @@ static void unlockRNOrientation(void) {
         });
     }
 
-    // 4. Automated Exit Tap Pipeline (Triggers RN onPress to snap controls into portrait layout)
-    NSArray *tapIntervals = @[@(0.35), @(0.55)];
-    for (NSNumber *tDelay in tapIntervals) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([tDelay doubleValue] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-            if (win) {
-                CGFloat safeTop = [LeftPanWindowHelper getSafeAreaTop:win];
-                CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
-
-                // Pure inline arithmetic without CoreGraphics dynamic symbol dependencies
-                UIView *hit = [win hitTest:ptTopLeft withEvent:nil];
-                if (hit && hit != win) {
-                    CGRect hitFrameInWin = [hit convertRect:hit.bounds toView:win];
-                    ptTopLeft = CGPointMake(hitFrameInWin.origin.x + hitFrameInWin.size.width * 0.5,
-                                            hitFrameInWin.origin.y + hitFrameInWin.size.height * 0.5);
-                }
-                [LeftPanWindowHelper simulateTapAtPoint:ptTopLeft inWindow:win];
+    // 4. Targeted Discovery Tap Pipeline (ONLY taps if a verified small button view is found; NEVER taps empty video)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+        if (win) {
+            UIView *targetBtn = [LeftPanWindowHelper findActualPlayerBackButton:win window:win];
+            if (targetBtn) {
+                [LeftPanWindowHelper simulateTapOnVerifiedView:targetBtn inWindow:win];
             }
-        });
-    }
+        }
+    });
 
     // 5. Release orientation privilege
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
