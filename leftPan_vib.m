@@ -315,14 +315,12 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
                 #pragma clang diagnostic pop
             }
             if (oriModule) {
-                for (NSString *s in @[@"lockToPortrait", @"unlockAllOrientations"]) {
-                    SEL sel = NSSelectorFromString(s);
-                    if ([oriModule respondsToSelector:sel]) {
-                        #pragma clang diagnostic push
-                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                        [oriModule performSelector:sel];
-                        #pragma clang diagnostic pop
-                    }
+                SEL lockSel = NSSelectorFromString(@"lockToPortrait");
+                if ([oriModule respondsToSelector:lockSel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [oriModule performSelector:lockSel];
+                    #pragma clang diagnostic pop
                 }
             }
         } @catch (NSException *e) {}
@@ -486,20 +484,12 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     } @catch (NSException *e) {}
 }
 
-static void unlockRNOrientation(void) {
+static void lockRNOrientationToPortrait(void) {
     Class oriClass = NSClassFromString(@"Orientation");
     if (!oriClass) {
         oriClass = NSClassFromString(@"OrientationLocker");
     }
     if (oriClass) {
-        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
-        Method m = class_getClassMethod(oriClass, setOriSel);
-        if (m) {
-            void (*impl)(id, SEL, UIInterfaceOrientationMask) = (void (*)(id, SEL, UIInterfaceOrientationMask))method_getImplementation(m);
-            if (impl) {
-                impl(oriClass, setOriSel, UIInterfaceOrientationMaskAll);
-            }
-        }
         SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
         if ([oriClass respondsToSelector:lockPortSel]) {
             #pragma clang diagnostic push
@@ -507,10 +497,19 @@ static void unlockRNOrientation(void) {
             [oriClass performSelector:lockPortSel];
             #pragma clang diagnostic pop
         }
+        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
+        Method m = class_getClassMethod(oriClass, setOriSel);
+        if (m) {
+            void (*impl)(id, SEL, UIInterfaceOrientationMask) = (void (*)(id, SEL, UIInterfaceOrientationMask))method_getImplementation(m);
+            if (impl) {
+                // Strictly lock to Portrait, NEVER MaskAll
+                impl(oriClass, setOriSel, UIInterfaceOrientationMaskPortrait);
+            }
+        }
     }
 }
 
-// Right-Edge Magnetic Snap & Layout Fitting Engine
+// Container-Immune View Fitting Engine: Never resizes root screen/layout containers!
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -521,10 +520,22 @@ static void unlockRNOrientation(void) {
         [queue removeObjectAtIndex:0];
         count++;
 
+        NSString *cls = NSStringFromClass([v class]);
+        
+        // CRITICAL IMMUNITY SHIELD: Completely skip layout and container nodes
+        if ([cls containsString:@"Window"] || [cls containsString:@"Transition"] || 
+            [cls containsString:@"Layout"] || [cls containsString:@"Screen"] || 
+            [cls containsString:@"Root"] || [cls containsString:@"Scroll"] || 
+            [cls containsString:@"Provider"] || [cls containsString:@"Navigation"]) {
+            [queue addObjectsFromArray:v.subviews];
+            continue;
+        }
+
         CGRect f = v.frame;
 
-        // 1. Constrain oversized parent containers
-        if (f.size.width > targetW + 5.0) {
+        // 1. Constrain video player containers only (leaves screen containers intact)
+        BOOL isVideoView = [cls containsString:@"Video"] || [cls containsString:@"Player"] || [cls containsString:@"IJK"];
+        if (isVideoView && f.size.width > targetW + 5.0) {
             CGFloat newW = targetW;
             CGFloat newH = f.size.height;
             if (newH > targetW * 0.70) {
@@ -536,8 +547,8 @@ static void unlockRNOrientation(void) {
             [v layoutIfNeeded];
         }
 
-        // 2. Right-Edge Magnetic Snap: Pull subviews floating off-screen back to visible edge
-        if (f.origin.x + f.size.width > targetW + 2.0 && f.size.width < targetW) {
+        // 2. Right-Edge Magnetic Snap: Pull subviews floating off-screen back to visible edge (for controls)
+        if (!isVideoView && f.origin.x + f.size.width > targetW + 2.0 && f.size.width < targetW && f.size.width > 10.0) {
             CGFloat newX = targetW - f.size.width - 12.0;
             if (newX < 0) newX = 0;
             v.frame = CGRectMake(newX, f.origin.y, f.size.width, f.size.height);
@@ -802,10 +813,11 @@ static void unlockRNOrientation(void) {
     return NO;
 }
 
-// Multi-Stage Force Rotation & Precision Sync Engine
+// Anti-Bounce Force Rotation Engine
 - (void)forcePortraitOrientation {
+    // 1. Enter strict Portrait-Only lock state
     g_forceAllowPortrait = YES;
-    unlockRNOrientation();
+    lockRNOrientationToPortrait();
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     if (@available(iOS 16.0, *)) {
@@ -813,7 +825,7 @@ static void unlockRNOrientation(void) {
         if (self.window.rootViewController) [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
     }
 
-    // 1. Invocation-based low-level private orientation assignment
+    // 2. Invocation-based private orientation assignment
     @try {
         SEL setOriSel = NSSelectorFromString(@"setOrientation:");
         if ([[UIDevice currentDevice] respondsToSelector:setOriSel]) {
@@ -836,7 +848,7 @@ static void unlockRNOrientation(void) {
 
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
 
-    // 2. Modern WindowScene Geometry Request
+    // 3. Modern WindowScene Geometry Request
     if (@available(iOS 16.0, *)) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
@@ -854,13 +866,17 @@ static void unlockRNOrientation(void) {
         [UIViewController attemptRotationToDeviceOrientation];
     }
 
-    // 3. Multi-Stage Pipeline: Synchronize Dimensions and clamp views
-    NSArray *intervals = @[@(0.10), @(0.25), @(0.45), @(0.70)];
-    for (NSNumber *delay in intervals) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([delay doubleValue] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-            CGFloat screenW = win ? win.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-            CGFloat screenH = win ? win.bounds.size.height : [UIScreen mainScreen].bounds.size.height;
+    // 4. Initial bridge notification
+    UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+    notifyReactNativeOrientationBridge(win);
+
+    // 5. Single Settled Stage (0.35s - after rotation finishes):
+    // Sync React Native dimensions, trigger exit button, and clamp leaf views
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindow *currWin = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+        if (currWin) {
+            CGFloat screenW = currWin.bounds.size.width;
+            CGFloat screenH = currWin.bounds.size.height;
             CGFloat targetW = MIN(screenW, screenH);
 
             [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
@@ -869,30 +885,22 @@ static void unlockRNOrientation(void) {
             [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidChangeStatusBarOrientationNotification object:nil];
             #pragma clang diagnostic pop
 
-            // React Native bridge notification
-            notifyReactNativeOrientationBridge(win);
+            notifyReactNativeOrientationBridge(currWin);
 
-            if (win) {
-                [LeftPanWindowHelper correctLandscapeViewHierarchy:win targetWidth:targetW];
-                [win setNeedsLayout];
-                [win layoutIfNeeded];
-            }
-        });
-    }
-
-    // 4. Targeted Discovery Tap Pipeline (ONLY taps if a verified small button view is found; NEVER taps empty video)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-        if (win) {
-            UIView *targetBtn = [LeftPanWindowHelper findActualPlayerBackButton:win window:win];
+            // Tap verified exit button if present
+            UIView *targetBtn = [LeftPanWindowHelper findActualPlayerBackButton:currWin window:currWin];
             if (targetBtn) {
-                [LeftPanWindowHelper simulateTapOnVerifiedView:targetBtn inWindow:win];
+                [LeftPanWindowHelper simulateTapOnVerifiedView:targetBtn inWindow:currWin];
             }
+
+            [LeftPanWindowHelper correctLandscapeViewHierarchy:currWin targetWidth:targetW];
+            [currWin setNeedsLayout];
+            [currWin layoutIfNeeded];
         }
     });
 
-    // 5. Release orientation privilege
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 6. Hold portrait lock for 2.0s to completely suppress gravity accelerometer bounce-back
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         g_forceAllowPortrait = NO;
         if (@available(iOS 16.0, *)) {
             if (topVC) [topVC setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -1179,7 +1187,8 @@ static void unlockRNOrientation(void) {
 static UIInterfaceOrientationMask (*orig_VC_supportedInterfaceOrientations)(id, SEL);
 static UIInterfaceOrientationMask swiz_VC_supportedInterfaceOrientations(UIViewController *self, SEL _cmd) {
     if (g_forceAllowPortrait) {
-        return UIInterfaceOrientationMaskAll;
+        // STRICT: ONLY Portrait, NEVER MaskAll
+        return UIInterfaceOrientationMaskPortrait;
     }
     if (orig_VC_supportedInterfaceOrientations) {
         return orig_VC_supportedInterfaceOrientations(self, _cmd);
