@@ -11,7 +11,7 @@
 // ---------------------------------------------------------
 #define kLPVPortraitZoneRatio (4.0 / 5.0)        
 #define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
-#define kLPVLandscapeZoneWidth 80.0              
+#define kLPVLandscapeZoneWidth 120.0             
 #define kLPVGestureStartVelocityThreshold -40.0
 #define kLPVPortraitSuccessTranslationRatio 0.35     
 #define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
@@ -101,7 +101,6 @@ static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer 
     return CGPointMake(-v.x, v.y);
 }
 
-// Ensure LeftPan PREVENTS player scrub gestures from starting
 - (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)preventedGestureRecognizer {
     if ([preventedGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
         return NO;
@@ -109,11 +108,7 @@ static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer 
     return YES;
 }
 
-// Ensure LeftPan CANNOT BE PREVENTED by player scrub gestures
 - (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)preventingGestureRecognizer {
-    if ([preventingGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
-        return YES;
-    }
     return NO;
 }
 @end
@@ -920,7 +915,7 @@ static void lockRNOrientationToPortrait(void) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
             for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
                     scene = (UIWindowScene *)s; break;
                 }
             }
@@ -1208,7 +1203,7 @@ static void lockRNOrientationToPortrait(void) {
 
     CGPoint rawVel = [self.pan rawVelocityInView:self.pan.view];
     if (rawVel.x >= kLPVGestureStartVelocityThreshold) return NO;
-    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) return NO;
+    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.1) return NO;
 
     if (![LeftPanWindowHelper canGoBack:topVC window:window isLandscape:isLandscape]) {
         return NO;
@@ -1217,19 +1212,19 @@ static void lockRNOrientationToPortrait(void) {
     return YES;
 }
 
-// CRITICAL FIX 1: LeftPan MUST NEVER be required to fail by competitor gestures!
+// LeftPan forces competing pan/scrub gestures to wait for LeftPan to fail!
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    return NO;
-}
-
-// CRITICAL FIX 2: Competitor pan/scrub/drag gestures MUST WAIT for LeftPan to fail!
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (gestureRecognizer == self.pan) {
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
             return NO;
         }
         return YES;
     }
+    return NO;
+}
+
+// LeftPan NEVER waits for any other gesture!
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     return NO;
 }
 
@@ -1287,6 +1282,14 @@ static void swiz_UIWindow_makeKeyAndVisible(UIWindow *self, SEL _cmd) {
     attachHelperToWindow(self);
 }
 
+static void (*orig_UIWindow_setHidden)(id, SEL, BOOL);
+static void swiz_UIWindow_setHidden(UIWindow *self, SEL _cmd, BOOL hidden) {
+    orig_UIWindow_setHidden(self, _cmd, hidden);
+    if (!hidden) {
+        attachHelperToWindow(self);
+    }
+}
+
 __attribute__((constructor)) static void init_leftPanGlobal(void) {
     Class vcClass = [UIViewController class];
     Method mSupported = class_getInstanceMethod(vcClass, @selector(supportedInterfaceOrientations));
@@ -1338,5 +1341,11 @@ __attribute__((constructor)) static void init_leftPanGlobal(void) {
     if (m) {
         orig_UIWindow_makeKeyAndVisible = (void (*)(id, SEL))method_getImplementation(m);
         method_setImplementation(m, (IMP)swiz_UIWindow_makeKeyAndVisible);
+    }
+
+    Method mSetHidden = class_getInstanceMethod(winClass, @selector(setHidden:));
+    if (mSetHidden) {
+        orig_UIWindow_setHidden = (void (*)(id, SEL, BOOL))method_getImplementation(mSetHidden);
+        method_setImplementation(mSetHidden, (IMP)swiz_UIWindow_setHidden);
     }
 }
