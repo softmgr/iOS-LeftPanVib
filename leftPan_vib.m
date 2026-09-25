@@ -385,9 +385,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             [touch setValue:@(UITouchPhaseBegan) forKey:@"_phase"];
         }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
         if ([touchHandler respondsToSelector:@selector(touchesBegan:withEvent:)]) {
             [touchHandler touchesBegan:[NSSet setWithObject:touch] withEvent:nil];
         }
+#pragma clang diagnostic pop
 
         // Send Ended after 35ms
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -403,9 +406,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 [touch setValue:@(UITouchPhaseEnded) forKey:@"_phase"];
             }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
             if ([touchHandler respondsToSelector:@selector(touchesEnded:withEvent:)]) {
                 [touchHandler touchesEnded:[NSSet setWithObject:touch] withEvent:nil];
             }
+#pragma clang diagnostic pop
         });
     } @catch (NSException *e) {}
 }
@@ -792,11 +798,12 @@ static void unlockRNOrientation(void) {
                 CGFloat safeTop = [LeftPanWindowHelper getSafeAreaTop:win];
                 CGPoint ptTopLeft = CGPointMake(25.0, safeTop + 22.0);
 
-                // Auto-target the exact center of the top-left return widget
+                // Pure inline arithmetic without CoreGraphics dynamic symbol dependencies
                 UIView *hit = [win hitTest:ptTopLeft withEvent:nil];
                 if (hit && hit != win) {
                     CGRect hitFrameInWin = [hit convertRect:hit.bounds toView:win];
-                    ptTopLeft = CGPointMake(CGRectGetMidX(hitFrameInWin), CGRectGetMidY(hitFrameInWin));
+                    ptTopLeft = CGPointMake(hitFrameInWin.origin.x + hitFrameInWin.size.width * 0.5,
+                                            hitFrameInWin.origin.y + hitFrameInWin.size.height * 0.5);
                 }
                 [LeftPanWindowHelper simulateTapAtPoint:ptTopLeft inWindow:win];
             }
