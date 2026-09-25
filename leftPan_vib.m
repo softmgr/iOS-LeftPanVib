@@ -2,7 +2,8 @@
 #import <objc/runtime.h>
 
 // =========================================================
-// DEBUG SWITCH: Set to 1 to enable Clipboard Logging, 0 for Release
+// DEBUG SWITCH: Set to 1 to enable Full Hierarchy Logging, 0 for Release
+// (Amap Round-Robin probe logs to Clipboard automatically regardless)
 // =========================================================
 #define ENABLE_DEBUG_LOGGING 0
 
@@ -20,6 +21,7 @@
 #define kLPVFallbackMinFlickTranslation 20.0         
 
 static char kWindowHelperKey;
+static NSInteger sAmapMethodIndex = 0; // Round-robin counter for Amap probe
 
 #pragma mark - Special App Whitelist
 
@@ -142,7 +144,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return nil;
 }
 
-// Check whether Amap is on its root map homepage by detecting signature navigation widgets
 + (BOOL)isAmapHomePage:(UIView *)rootView {
     if (!rootView) return NO;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
@@ -166,16 +167,14 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
-    // Safety Net 1: Tieba Post views
     if (isTiebaPBViewController(topVC)) return YES;
     
-    // Safety Net 2: AutoNavi / Amap SPA Architecture
     if (isSpecialApp_Amap()) {
         UIWindow *win = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
-            return NO; // Suppress swipe on the main map interface
+            return NO; // Strictly suppress on main map screen
         }
-        return YES; // Allow in Settings, Navigation, Search, and Subpages
+        return YES; // Allow in subpages
     }
     
     UIViewController *current = topVC;
@@ -190,108 +189,41 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Execute page exit logic across Amap's LTM, AJX, and view stack
-+ (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
-    // 1. Invoke LTMPageManager singleton
-    Class ltmClass = NSClassFromString(@"LTMPageManager");
-    if (ltmClass) {
-        id mgr = nil;
-        if ([ltmClass respondsToSelector:@selector(sharedInstance)]) {
-            mgr = [ltmClass performSelector:@selector(sharedInstance)];
-        } else if ([ltmClass respondsToSelector:@selector(defaultManager)]) {
-            mgr = [ltmClass performSelector:@selector(defaultManager)];
-        }
-        if (mgr) {
-            SEL popAnimSel = NSSelectorFromString(@"popPageAnimated:");
-            if ([mgr respondsToSelector:popAnimSel]) {
-                NSMethodSignature *sig = [mgr methodSignatureForSelector:popAnimSel];
-                if (sig && sig.numberOfArguments == 3) {
-                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                    [inv setSelector:popAnimSel];
-                    [inv setTarget:mgr];
-                    BOOL arg = YES;
-                    [inv setArgument:&arg atIndex:2];
-                    [inv invoke];
-                    return;
-                }
-            }
-            NSArray *selNames = @[@"popPage", @"goBack", @"dismissPage", @"closePage", @"back", @"pop"];
-            for (NSString *s in selNames) {
-                SEL sel = NSSelectorFromString(s);
-                if ([mgr respondsToSelector:sel]) {
-                    #pragma clang diagnostic push
-                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                    [mgr performSelector:sel];
-                    #pragma clang diagnostic pop
-                    return;
-                }
-            }
-        }
-    }
-    
-    // 2. Invoke NMPageLifeCycle singleton
-    Class plcClass = NSClassFromString(@"NMPageLifeCycle");
-    if (plcClass && [plcClass respondsToSelector:@selector(sharedInstance)]) {
-        id plc = [plcClass performSelector:@selector(sharedInstance)];
-        if (plc) {
-            NSArray *selNames = @[@"goBack", @"popPage", @"popPageAnimated:"];
-            for (NSString *s in selNames) {
-                SEL sel = NSSelectorFromString(s);
-                if ([plc respondsToSelector:sel]) {
-                    #pragma clang diagnostic push
-                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                    [plc performSelector:sel];
-                    #pragma clang diagnostic pop
-                    return;
-                }
-            }
-        }
-    }
-    
-    // 3. Invoke direct controller selectors on GDMapViewController
-    NSArray *vcSels = @[@"goBack", @"onBack", @"popPage", @"dismissPage", @"pageBack", @"handleBack", @"back", @"onClickBackBtn", @"onBackBtnClicked"];
-    for (NSString *s in vcSels) {
-        SEL sel = NSSelectorFromString(s);
-        if ([topVC respondsToSelector:sel]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [topVC performSelector:sel];
-            #pragma clang diagnostic pop
-            return;
-        }
-    }
-    
-    // 4. Invoke AJXRouter
-    Class ajxRouter = NSClassFromString(@"AJXRouter");
-    if (ajxRouter) {
-        if ([ajxRouter respondsToSelector:NSSelectorFromString(@"pop")]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [ajxRouter performSelector:NSSelectorFromString(@"pop")];
-            #pragma clang diagnostic pop
-            return;
-        }
-        if ([ajxRouter respondsToSelector:NSSelectorFromString(@"goBack")]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [ajxRouter performSelector:NSSelectorFromString(@"goBack")];
-            #pragma clang diagnostic pop
-            return;
-        }
-    }
+#pragma mark - Amap Round-Robin Execution Engine
 
-    // 5. Fallback: Trigger tap gestures on the top-left navigation back button
++ (CGPoint)calculateTopLeftBackButtonPoint:(UIWindow *)window {
+    CGFloat safeTop = 20.0;
+    if (@available(iOS 11.0, *)) {
+        if (window && window.safeAreaInsets.top > 0) {
+            safeTop = window.safeAreaInsets.top;
+        }
+    }
+    // Vertical center of the standard 44pt navigation bar
+    return CGPointMake(25.0, safeTop + 22.0);
+}
+
++ (void)probeAmapReturnMethods:(UIViewController *)topVC window:(UIWindow *)window {
+    NSInteger methodId = sAmapMethodIndex % 4;
+    sAmapMethodIndex++;
+
+    NSMutableString *log = [NSMutableString stringWithFormat:@"=== LPV AMAP PROBE [Method #%ld] ===\n", (long)methodId];
+    [log appendFormat:@"Time: %@\n", [NSDate date]];
+    [log appendFormat:@"TopVC: %@\n", NSStringFromClass([topVC class])];
+    
     UIWindow *targetWin = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
-    if (targetWin) {
-        NSMutableArray *queue = [NSMutableArray arrayWithObject:targetWin];
-        while (queue.count > 0) {
-            UIView *v = queue.firstObject;
-            [queue removeObjectAtIndex:0];
-            if (v.hidden || v.alpha < 0.05) continue;
+    CGPoint pt = [self calculateTopLeftBackButtonPoint:targetWin];
+
+    switch (methodId) {
+        case 0: {
+            [log appendFormat:@"Name: HitTest Gesture Trigger\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
+            UIView *hit = [targetWin hitTest:pt withEvent:nil];
+            [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
             
-            CGRect absFrame = [v convertRect:v.bounds toView:nil];
-            if (absFrame.origin.x <= 80 && absFrame.origin.y <= 120 && absFrame.size.width >= 15 && absFrame.size.height >= 15) {
-                for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+            BOOL triggered = NO;
+            UIView *curr = hit;
+            int level = 0;
+            while (curr && level < 6) {
+                for (UIGestureRecognizer *gr in curr.gestureRecognizers) {
                     if ([gr isKindOfClass:[UITapGestureRecognizer class]] || [NSStringFromClass([gr class]) containsString:@"Tap"]) {
                         @try {
                             NSArray *targets = [gr valueForKey:@"targets"];
@@ -303,16 +235,165 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                                     #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                                     [target performSelector:action withObject:gr];
                                     #pragma clang diagnostic pop
-                                    return;
+                                    [log appendFormat:@"Fired Gesture: %@ -> %s\n", NSStringFromClass([target class]), sel_getName(action)];
+                                    triggered = YES;
                                 }
                             }
-                        } @catch (NSException *e) {}
+                        } @catch (NSException *e) {
+                            [log appendFormat:@"Gesture exception: %@\n", e.reason];
+                        }
+                    }
+                }
+                curr = curr.superview;
+                level++;
+            }
+            [log appendFormat:@"Result: %@\n", triggered ? @"Dispatched Gesture" : @"No Tap Gesture Found"];
+            break;
+        }
+        case 1: {
+            [log appendFormat:@"Name: HitTest UIControl / Touch Dispatch\nTarget Pt: {%.1f, %.1f}\n", pt.x, pt.y];
+            UIView *hit = [targetWin hitTest:pt withEvent:nil];
+            [log appendFormat:@"HitView: %@\n", hit ? NSStringFromClass([hit class]) : @"nil"];
+            
+            BOOL triggered = NO;
+            UIView *curr = hit;
+            int level = 0;
+            while (curr && level < 6) {
+                if ([curr isKindOfClass:[UIControl class]]) {
+                    UIControl *c = (UIControl *)curr;
+                    [c sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    [log appendFormat:@"Fired UIControl: %@\n", NSStringFromClass([c class])];
+                    triggered = YES;
+                    break;
+                }
+                curr = curr.superview;
+                level++;
+            }
+            if (!triggered && hit) {
+                // Direct touch lifecycle invocation
+                [hit touchesBegan:[NSSet set] withEvent:nil];
+                [hit touchesEnded:[NSSet set] withEvent:nil];
+                [log appendString:@"Dispatched touchesBegan/touchesEnded to hitView\n"];
+            }
+            break;
+        }
+        case 2: {
+            [log appendString:@"Name: Amap Engine Singletons (LTMPageManager / AJXRouter / NMPageLifeCycle)\n"];
+            BOOL called = NO;
+            
+            // 2.1 LTMPageManager
+            Class ltmClass = NSClassFromString(@"LTMPageManager");
+            if (ltmClass) {
+                id mgr = [ltmClass respondsToSelector:@selector(sharedInstance)] ? [ltmClass performSelector:@selector(sharedInstance)] : nil;
+                if (!mgr && [ltmClass respondsToSelector:@selector(defaultManager)]) {
+                    mgr = [ltmClass performSelector:@selector(defaultManager)];
+                }
+                if (mgr) {
+                    SEL popAnimSel = NSSelectorFromString(@"popPageAnimated:");
+                    if ([mgr respondsToSelector:popAnimSel]) {
+                        NSMethodSignature *sig = [mgr methodSignatureForSelector:popAnimSel];
+                        if (sig && sig.numberOfArguments == 3) {
+                            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                            [inv setSelector:popAnimSel];
+                            [inv setTarget:mgr];
+                            BOOL arg = YES;
+                            [inv setArgument:&arg atIndex:2];
+                            [inv invoke];
+                            [log appendString:@"Invoked: [LTMPageManager popPageAnimated:YES]\n"];
+                            called = YES;
+                        }
+                    }
+                    if (!called) {
+                        for (NSString *s in @[@"popPage", @"goBack", @"dismissPage", @"closePage"]) {
+                            SEL sel = NSSelectorFromString(s);
+                            if ([mgr respondsToSelector:sel]) {
+                                #pragma clang diagnostic push
+                                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                                [mgr performSelector:sel];
+                                #pragma clang diagnostic pop
+                                [log appendFormat:@"Invoked: [LTMPageManager %@]\n", s];
+                                called = YES;
+                                break;
+                            }
+                        }
                     }
                 }
             }
-            [queue addObjectsFromArray:v.subviews];
+            
+            // 2.2 AJXRouter
+            if (!called) {
+                Class ajxRouter = NSClassFromString(@"AJXRouter");
+                if (ajxRouter) {
+                    for (NSString *s in @[@"pop", @"goBack", @"back"]) {
+                        SEL sel = NSSelectorFromString(s);
+                        if ([ajxRouter respondsToSelector:sel]) {
+                            #pragma clang diagnostic push
+                            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                            [ajxRouter performSelector:sel];
+                            #pragma clang diagnostic pop
+                            [log appendFormat:@"Invoked: [AJXRouter %@]\n", s];
+                            called = YES;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 2.3 NMPageLifeCycle
+            if (!called) {
+                Class plcClass = NSClassFromString(@"NMPageLifeCycle");
+                if (plcClass && [plcClass respondsToSelector:@selector(sharedInstance)]) {
+                    id plc = [plcClass performSelector:@selector(sharedInstance)];
+                    if (plc && [plc respondsToSelector:NSSelectorFromString(@"goBack")]) {
+                        #pragma clang diagnostic push
+                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                        [plc performSelector:NSSelectorFromString(@"goBack")];
+                        #pragma clang diagnostic pop
+                        [log appendString:@"Invoked: [NMPageLifeCycle goBack]\n"];
+                        called = YES;
+                    }
+                }
+            }
+            [log appendFormat:@"Result: %@\n", called ? @"Called engine singleton" : @"No matching engine singleton"];
+            break;
+        }
+        case 3: {
+            [log appendString:@"Name: Controller Selectors & AMNavigationController Pop\n"];
+            BOOL called = NO;
+            
+            // 3.1 Direct selectors on GDMapViewController
+            for (NSString *s in @[@"goBack", @"onBack", @"pageBack", @"dismissPage", @"popPage", @"onBackBtnClicked", @"back"]) {
+                SEL sel = NSSelectorFromString(s);
+                if ([topVC respondsToSelector:sel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [topVC performSelector:sel];
+                    #pragma clang diagnostic pop
+                    [log appendFormat:@"Invoked on TopVC: [%@ %@]\n", NSStringFromClass([topVC class]), s];
+                    called = YES;
+                    break;
+                }
+            }
+            
+            // 3.2 AMNavigationController pop bypass
+            if (!called && topVC.navigationController) {
+                [topVC.navigationController popViewControllerAnimated:YES];
+                [log appendString:@"Invoked: [topVC.navigationController popViewControllerAnimated:YES]\n"];
+                called = YES;
+            } else if (!called && [topVC.parentViewController isKindOfClass:[UINavigationController class]]) {
+                [(UINavigationController *)topVC.parentViewController popViewControllerAnimated:YES];
+                [log appendString:@"Invoked: [(UINavigationController *)parent popViewControllerAnimated:YES]\n"];
+                called = YES;
+            }
+            [log appendFormat:@"Result: %@\n", called ? @"Dispatched VC action" : @"No VC selector found"];
+            break;
         }
     }
+    
+    [log appendString:@"=====================================\n"];
+    
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    pasteboard.string = log;
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
@@ -520,7 +601,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Force Fallback mode for custom single-controller structures and overridden stacks
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
@@ -607,7 +687,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                     [self forcePortraitOrientation];
                 } else {
                     if (isSpecialApp_Amap()) {
-                        [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
+                        [LeftPanWindowHelper probeAmapReturnMethods:topVC window:self.window];
                         return;
                     }
                     [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
@@ -658,7 +738,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return NO;
     }
 
-    // Exempt Huya and Amap from game engine blocking (AMap3DView contains 3D render pipelines)
     if (!isSpecialApp_Huya() && !isSpecialApp_Amap()) {
         if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
             [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
