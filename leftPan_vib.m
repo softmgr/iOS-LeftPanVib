@@ -199,7 +199,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
-    // Always permit gesture if physically held horizontally (fake-landscape video protection)
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
     if (UIDeviceOrientationIsLandscape(devOri)) {
         return YES;
@@ -219,11 +218,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 #pragma mark - Universal Video Player & Fake Landscape Engine
 
-// Comprehensive orientation check: combines system, hardware gyro, and visual transform layers
 + (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
     
-    // Check physical device orientation (detected by hardware accelerometer/gyro)
     UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
     if (UIDeviceOrientationIsLandscape(devOri)) {
         return YES;
@@ -237,7 +234,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES;
     }
     
-    // Scan for 90-degree rotated player container views
     if (window) {
         NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
         int count = 0;
@@ -259,19 +255,85 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Universally exit full-screen mode on any video player without closing the underlying VC
-+ (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
+// Penetrate hidden control layers and fire the exit button directly
++ (BOOL)searchAndTriggerExitButtonInView:(UIView *)root window:(UIWindow *)window {
+    if (!root) return NO;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+    int count = 0;
+    
+    while (queue.count > 0 && count < 180) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        count++;
+        
+        // CRITICAL FIX: DO NOT skip hidden or alpha==0 views here!
+        // When control bars fade out, their alpha becomes 0, but the button remains actionable in memory.
+        
+        if ([v isKindOfClass:[UIButton class]]) {
+            UIButton *btn = (UIButton *)v;
+            CGRect absFrame = [btn convertRect:btn.bounds toView:window];
+            BOOL isExitBtn = NO;
+            
+            // 1. Check registered action selectors
+            for (id target in [btn allTargets]) {
+                NSArray *actions = [btn actionsForTarget:target forControlEvent:UIControlEventTouchUpInside];
+                for (NSString *act in actions) {
+                    NSString *low = [act lowercaseString];
+                    if ([low containsString:@"back"] || [low containsString:@"exit"] || 
+                        [low containsString:@"shrink"] || [low containsString:@"small"] || 
+                        [low containsString:@"screen"]) {
+                        isExitBtn = YES;
+                        break;
+                    }
+                }
+                if (isExitBtn) break;
+            }
+            
+            // 2. Geometric heuristic: Top-Left Back Button area
+            if (!isExitBtn) {
+                if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
+                    absFrame.size.width >= 20.0 && absFrame.size.width <= 90.0 &&
+                    absFrame.size.height >= 20.0 && absFrame.size.height <= 90.0) {
+                    isExitBtn = YES;
+                }
+            }
+            
+            // 3. Geometric heuristic: Bottom-Right Fullscreen Toggle Button area
+            if (!isExitBtn) {
+                CGFloat w = window.bounds.size.width;
+                CGFloat h = window.bounds.size.height;
+                if (absFrame.origin.x >= w - 90.0 && absFrame.origin.y >= h - 90.0 &&
+                    absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
+                    isExitBtn = YES;
+                }
+            }
+            
+            if (isExitBtn) {
+                // Force-enable to bypass player dormancy defenses
+                btn.enabled = YES;
+                btn.userInteractionEnabled = YES;
+                [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                [btn touchesBegan:[NSSet set] withEvent:nil];
+                [btn touchesEnded:[NSSet set] withEvent:nil];
+                return YES;
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return NO;
+}
+
+// Universally exit full-screen mode on any video player with "Wake-and-Strike" defense
++ (void)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
     
-    // 1. Selector Reflection on topVC and parent containers
+    // Step 1: Controller Method Reflection
     NSMutableArray *targets = [NSMutableArray array];
     if (topVC) [targets addObject:topVC];
     if (topVC.parentViewController) [targets addObject:topVC.parentViewController];
     
     for (id obj in targets) {
         UIViewController *vc = (UIViewController *)obj;
-        
-        // 1.1 Direct Boolean setters
         for (NSString *selName in @[@"setFullScreen:", @"setFullscreen:"]) {
             SEL sel = NSSelectorFromString(selName);
             if ([vc respondsToSelector:sel]) {
@@ -290,7 +352,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         if (didTrigger) break;
         
-        // 1.2 Actionable method signatures
         NSArray *exitSels = @[
             @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
             @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
@@ -318,68 +379,30 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (didTrigger) break;
     }
     
-    // 2. Traversal for Player Back / Exit Buttons
+    // Step 2: Hidden-Layer Penetration Search
     UIView *searchRoot = topVC.view ?: window;
-    if (searchRoot) {
-        NSMutableArray *queue = [NSMutableArray arrayWithObject:searchRoot];
-        while (queue.count > 0) {
-            UIView *v = queue.firstObject;
-            [queue removeObjectAtIndex:0];
-            if (v.hidden || v.alpha < 0.05) continue;
-            
-            if ([v isKindOfClass:[UIButton class]]) {
-                UIButton *btn = (UIButton *)v;
-                CGRect absFrame = [btn convertRect:btn.bounds toView:window];
-                
-                BOOL isExitBtn = NO;
-                
-                // Inspect registered actions
-                for (id target in [btn allTargets]) {
-                    NSArray *actions = [btn actionsForTarget:target forControlEvent:UIControlEventTouchUpInside];
-                    for (NSString *act in actions) {
-                        NSString *low = [act lowercaseString];
-                        if ([low containsString:@"back"] || [low containsString:@"exit"] || 
-                            [low containsString:@"shrink"] || [low containsString:@"small"] || 
-                            [low containsString:@"screen"]) {
-                            isExitBtn = YES;
-                            break;
-                        }
-                    }
-                    if (isExitBtn) break;
-                }
-                
-                // Geometric heuristic: Top-Left Back Button in player bar
-                if (!isExitBtn) {
-                    if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
-                        absFrame.size.width >= 20.0 && absFrame.size.width <= 90.0 &&
-                        absFrame.size.height >= 20.0 && absFrame.size.height <= 90.0) {
-                        isExitBtn = YES;
-                    }
-                }
-                
-                // Geometric heuristic: Bottom-Right Fullscreen Toggle Button
-                if (!isExitBtn) {
-                    CGFloat w = window.bounds.size.width;
-                    CGFloat h = window.bounds.size.height;
-                    if (absFrame.origin.x >= w - 90.0 && absFrame.origin.y >= h - 90.0 &&
-                        absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
-                        isExitBtn = YES;
-                    }
-                }
-                
-                if (isExitBtn) {
-                    [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
-                    [btn touchesBegan:[NSSet set] withEvent:nil];
-                    [btn touchesEnded:[NSSet set] withEvent:nil];
-                    didTrigger = YES;
-                    break;
-                }
-            }
-            [queue addObjectsFromArray:v.subviews];
-        }
+    if (!didTrigger && searchRoot) {
+        didTrigger = [self searchAndTriggerExitButtonInView:searchRoot window:window];
     }
     
-    return didTrigger;
+    // Step 3: "Wake-and-Strike" Fallback (Mimic User Screen-Tap)
+    // If controls are hidden and the player refuses dormant commands, tap screen center to wake controls,
+    // then strike the exit button 30ms later.
+    if (!didTrigger) {
+        CGFloat screenW = window.bounds.size.width;
+        CGFloat screenH = window.bounds.size.height;
+        CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
+        
+        UIView *centerHit = [window hitTest:centerPt withEvent:nil];
+        if (centerHit) {
+            [centerHit touchesBegan:[NSSet set] withEvent:nil];
+            [centerHit touchesEnded:[NSSet set] withEvent:nil];
+        }
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self searchAndTriggerExitButtonInView:searchRoot window:window];
+        });
+    }
 }
 
 #pragma mark - Amap Dual-Strike Return Engine
@@ -682,12 +705,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    // 1. In Landscape mode: ONLY exit full-screen video back to portrait.
-                    // Absolutely DO NOT pop or dismiss the view controller here!
+                    // 1. Landscape / Fullscreen video mode: ONLY exit full-screen to portrait
                     [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
                 } else {
-                    // 2. In Portrait mode: perform standard page close/pop.
+                    // 2. Standard Portrait mode: Normal page close/pop
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
                     } else {
