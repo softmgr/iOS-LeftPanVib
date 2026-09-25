@@ -256,26 +256,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Lightweight Direct Invocation Helpers (Eliminates NSInvocation binary bloat)
-static inline void callVoidBoolSelector(id target, SEL sel, BOOL val) {
-    if (!target || !sel) return;
-    Method m = class_getInstanceMethod([target class], sel);
-    if (m) {
-        void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))method_getImplementation(m);
-        if (fn) fn(target, sel, val);
-    }
-}
-
-static inline void callVoidSelector(id target, SEL sel) {
-    if (!target || !sel) return;
-    Method m = class_getInstanceMethod([target class], sel);
-    if (m) {
-        void (*fn)(id, SEL) = (void (*)(id, SEL))method_getImplementation(m);
-        if (fn) fn(target, sel);
-    }
-}
-
-// React Native Direct Bridge Notification Dispatcher (Pure C-Function Implementation)
+// React Native Direct Bridge Notification Dispatcher
 static void notifyReactNativeOrientationBridge(UIWindow *window) {
     if (!window) return;
     UIView *rootView = nil;
@@ -297,30 +278,52 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     } @catch (NSException *e) {}
 
     if (bridge) {
-        SEL enqueueSel = NSSelectorFromString(@"enqueueJSCall:method:args:completion:");
-        Method m = class_getInstanceMethod([bridge class], enqueueSel);
-        if (m) {
-            void (*fn)(id, SEL, id, id, id, id) = (void (*)(id, SEL, id, id, id, id))method_getImplementation(m);
-            if (fn) {
-                NSDictionary *payload = @{@"orientation": @"PORTRAIT", @"deviceOrientation": @"PORTRAIT"};
-                fn(bridge, enqueueSel, @"RCTDeviceEventEmitter", @"emit", @[@"orientationDidChange", payload], nil);
-                fn(bridge, enqueueSel, @"RCTDeviceEventEmitter", @"emit", @[@"deviceOrientationDidChange", payload], nil);
+        @try {
+            SEL enqueueSel = NSSelectorFromString(@"enqueueJSCall:method:args:completion:");
+            if ([bridge respondsToSelector:enqueueSel]) {
+                NSMethodSignature *sig = [bridge methodSignatureForSelector:enqueueSel];
+                if (sig && sig.numberOfArguments == 6) {
+                    void (^emitEvent)(NSString *, NSString *) = ^(NSString *event, NSString *val) {
+                        NSArray *args = @[event, @{@"orientation": val, @"deviceOrientation": val}];
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        [inv setSelector:enqueueSel];
+                        [inv setTarget:bridge];
+                        NSString *mod = @"RCTDeviceEventEmitter";
+                        NSString *meth = @"emit";
+                        [inv setArgument:&mod atIndex:2];
+                        [inv setArgument:&meth atIndex:3];
+                        [inv setArgument:&args atIndex:4];
+                        void *nilBlock = NULL;
+                        [inv setArgument:&nilBlock atIndex:5];
+                        [inv invoke];
+                    };
+                    emitEvent(@"orientationDidChange", @"PORTRAIT");
+                    emitEvent(@"deviceOrientationDidChange", @"PORTRAIT");
+                }
             }
-        }
+        } @catch (NSException *e) {}
 
-        id oriModule = nil;
-        SEL modSel = NSSelectorFromString(@"moduleForName:");
-        Method modMethod = class_getInstanceMethod([bridge class], modSel);
-        if (modMethod) {
-            id (*getMod)(id, SEL, id) = (id (*)(id, SEL, id))method_getImplementation(modMethod);
-            if (getMod) {
-                oriModule = getMod(bridge, modSel, @"OrientationLocker");
-                if (!oriModule) oriModule = getMod(bridge, modSel, @"Orientation");
+        @try {
+            id oriModule = nil;
+            if ([bridge respondsToSelector:NSSelectorFromString(@"moduleForName:")]) {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                oriModule = [bridge performSelector:NSSelectorFromString(@"moduleForName:") withObject:@"OrientationLocker"];
+                if (!oriModule) {
+                    oriModule = [bridge performSelector:NSSelectorFromString(@"moduleForName:") withObject:@"Orientation"];
+                }
+                #pragma clang diagnostic pop
             }
-        }
-        if (oriModule) {
-            callVoidSelector(oriModule, NSSelectorFromString(@"lockToPortrait"));
-        }
+            if (oriModule) {
+                SEL lockSel = NSSelectorFromString(@"lockToPortrait");
+                if ([oriModule respondsToSelector:lockSel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [oriModule performSelector:lockSel];
+                    #pragma clang diagnostic pop
+                }
+            }
+        } @catch (NSException *e) {}
     }
 }
 
@@ -338,16 +341,21 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
         
         CGRect r = [v convertRect:v.bounds toView:window];
         
+        // Match specific small button bounds in upper-left corner
         if (r.origin.x >= 15.0 && r.origin.x <= 130.0 &&
             r.origin.y >= 20.0 && r.origin.y <= 160.0 &&
             r.size.width >= 18.0 && r.size.width <= 85.0 &&
             r.size.height >= 18.0 && r.size.height <= 85.0) {
             
-            BOOL isLikelyButton = [v isKindOfClass:[UIControl class]] || (v.gestureRecognizers.count > 0) || (v.subviews.count <= 3);
+            BOOL isLikelyButton = NO;
+            if ([v isKindOfClass:[UIControl class]]) isLikelyButton = YES;
+            if (v.gestureRecognizers.count > 0) isLikelyButton = YES;
+            if (v.subviews.count <= 3) isLikelyButton = YES;
+            
             if (isLikelyButton) {
                 CGFloat dx = r.origin.x - 55.0;
                 CGFloat dy = r.origin.y - 65.0;
-                CGFloat dist = dx * dx + dy * dy;
+                CGFloat dist = sqrt(dx * dx + dy * dy);
                 if (dist < minDistance) {
                     minDistance = dist;
                     bestCandidate = v;
@@ -359,27 +367,7 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     return bestCandidate;
 }
 
-// Precision Tap Engine: Fast Direct C-Pointer Touch Dispatch
-static inline void setTouchLoc(UITouch *touch, CGPoint pt) {
-    SEL sel = NSSelectorFromString(@"_setLocationInWindow:resetPrevious:");
-    Method m = class_getInstanceMethod([UITouch class], sel);
-    if (m) {
-        ((void (*)(id, SEL, CGPoint, BOOL))method_getImplementation(m))(touch, sel, pt, YES);
-    } else {
-        [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
-    }
-}
-
-static inline void setTouchPh(UITouch *touch, NSInteger phase) {
-    SEL sel = NSSelectorFromString(@"setPhase:");
-    Method m = class_getInstanceMethod([UITouch class], sel);
-    if (m) {
-        ((void (*)(id, SEL, NSInteger))method_getImplementation(m))(touch, sel, phase);
-    } else {
-        [touch setValue:@(phase) forKey:@"_phase"];
-    }
-}
-
+// Precision Tap Engine: Only dispatches tap on verified button target, NEVER on video background
 + (void)simulateTapOnVerifiedView:(UIView *)targetView inWindow:(UIWindow *)window {
     if (!targetView || !window) return;
     CGRect r = [targetView convertRect:targetView.bounds toView:window];
@@ -413,13 +401,15 @@ static inline void setTouchPh(UITouch *touch, NSInteger phase) {
         curr = curr.superview;
     }
 
+    // React Native TouchHandler Dispatch
     UIGestureRecognizer *touchHandler = nil;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
     while (queue.count > 0) {
         UIView *v = queue.firstObject;
         [queue removeObjectAtIndex:0];
         for (UIGestureRecognizer *gr in v.gestureRecognizers) {
-            if ([NSStringFromClass([gr class]) containsString:@"TouchHandler"]) {
+            NSString *cls = NSStringFromClass([gr class]);
+            if ([cls containsString:@"TouchHandler"]) {
                 touchHandler = gr;
                 break;
             }
@@ -432,44 +422,93 @@ static inline void setTouchPh(UITouch *touch, NSInteger phase) {
 
     @try {
         UITouch *touch = [[UITouch alloc] init];
-        [touch setValue:window forKey:@"_window"];
-        [touch setValue:targetView forKey:@"_view"];
-
-        setTouchLoc(touch, pt);
-        setTouchPh(touch, 0); // UITouchPhaseBegan
-
-        SEL beganSel = @selector(touchesBegan:withEvent:);
-        Method mBegan = class_getInstanceMethod([touchHandler class], beganSel);
-        if (mBegan) {
-            ((void (*)(id, SEL, id, id))method_getImplementation(mBegan))(touchHandler, beganSel, [NSSet setWithObject:touch], nil);
+        if ([touch respondsToSelector:@selector(setWindow:)]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [touch performSelector:@selector(setWindow:) withObject:window];
+            [touch performSelector:@selector(setView:) withObject:targetView];
+            #pragma clang diagnostic pop
+        } else {
+            [touch setValue:window forKey:@"_window"];
+            [touch setValue:targetView forKey:@"_view"];
         }
 
+        if ([touch respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
+            NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(_setLocationInWindow:resetPrevious:)];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:@selector(_setLocationInWindow:resetPrevious:)];
+            [inv setTarget:touch];
+            [inv setArgument:&pt atIndex:2];
+            BOOL reset = YES;
+            [inv setArgument:&reset atIndex:3];
+            [inv invoke];
+        } else {
+            [touch setValue:[NSValue valueWithCGPoint:pt] forKey:@"_locationInWindow"];
+        }
+
+        if ([touch respondsToSelector:@selector(setPhase:)]) {
+            NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setPhase:)];
+            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+            [inv setSelector:@selector(setPhase:)];
+            [inv setTarget:touch];
+            UITouchPhase phase = UITouchPhaseBegan;
+            [inv setArgument:&phase atIndex:2];
+            [inv invoke];
+        }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
+        if ([touchHandler respondsToSelector:@selector(touchesBegan:withEvent:)]) {
+            [touchHandler touchesBegan:[NSSet setWithObject:touch] withEvent:nil];
+        }
+#pragma clang diagnostic pop
+
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            setTouchPh(touch, 3); // UITouchPhaseEnded
-            SEL endedSel = @selector(touchesEnded:withEvent:);
-            Method mEnded = class_getInstanceMethod([touchHandler class], endedSel);
-            if (mEnded) {
-                ((void (*)(id, SEL, id, id))method_getImplementation(mEnded))(touchHandler, endedSel, [NSSet setWithObject:touch], nil);
+            if ([touch respondsToSelector:@selector(setPhase:)]) {
+                NSMethodSignature *sig = [touch methodSignatureForSelector:@selector(setPhase:)];
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setSelector:@selector(setPhase:)];
+                [inv setTarget:touch];
+                UITouchPhase phase = UITouchPhaseEnded;
+                [inv setArgument:&phase atIndex:2];
+                [inv invoke];
             }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
+            if ([touchHandler respondsToSelector:@selector(touchesEnded:withEvent:)]) {
+                [touchHandler touchesEnded:[NSSet setWithObject:touch] withEvent:nil];
+            }
+#pragma clang diagnostic pop
         });
     } @catch (NSException *e) {}
 }
 
 static void lockRNOrientationToPortrait(void) {
-    Class oriClass = NSClassFromString(@"OrientationLocker");
-    if (!oriClass) oriClass = NSClassFromString(@"Orientation");
+    Class oriClass = NSClassFromString(@"Orientation");
+    if (!oriClass) {
+        oriClass = NSClassFromString(@"OrientationLocker");
+    }
     if (oriClass) {
-        callVoidSelector(oriClass, NSSelectorFromString(@"lockToPortrait"));
+        SEL lockPortSel = NSSelectorFromString(@"lockToPortrait");
+        if ([oriClass respondsToSelector:lockPortSel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [oriClass performSelector:lockPortSel];
+            #pragma clang diagnostic pop
+        }
         SEL setOriSel = NSSelectorFromString(@"setOrientation:");
         Method m = class_getClassMethod(oriClass, setOriSel);
         if (m) {
             void (*impl)(id, SEL, UIInterfaceOrientationMask) = (void (*)(id, SEL, UIInterfaceOrientationMask))method_getImplementation(m);
-            if (impl) impl(oriClass, setOriSel, UIInterfaceOrientationMaskPortrait);
+            if (impl) {
+                impl(oriClass, setOriSel, UIInterfaceOrientationMaskPortrait);
+            }
         }
     }
 }
 
-// Container-Immune View Fitting Engine: Preserves root and layout nodes, clamps only video/controls
+// Container-Immune View Fitting Engine: Never resizes root screen/layout containers!
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -482,7 +521,7 @@ static void lockRNOrientationToPortrait(void) {
 
         NSString *cls = NSStringFromClass([v class]);
         
-        // Container Immunity Shield
+        // CRITICAL IMMUNITY SHIELD: Completely skip layout and container nodes
         if ([cls containsString:@"Window"] || [cls containsString:@"Transition"] || 
             [cls containsString:@"Layout"] || [cls containsString:@"Screen"] || 
             [cls containsString:@"Root"] || [cls containsString:@"Scroll"] || 
@@ -492,17 +531,22 @@ static void lockRNOrientationToPortrait(void) {
         }
 
         CGRect f = v.frame;
-        BOOL isVideoView = [cls containsString:@"Video"] || [cls containsString:@"Player"] || [cls containsString:@"IJK"];
 
+        // 1. Constrain video player containers only (leaves screen containers intact)
+        BOOL isVideoView = [cls containsString:@"Video"] || [cls containsString:@"Player"] || [cls containsString:@"IJK"];
         if (isVideoView && f.size.width > targetW + 5.0) {
             CGFloat newW = targetW;
-            CGFloat newH = (f.size.height > targetW * 0.70) ? targetW * (9.0 / 16.0) : f.size.height;
+            CGFloat newH = f.size.height;
+            if (newH > targetW * 0.70) {
+                newH = targetW * (9.0 / 16.0);
+            }
             v.frame = CGRectMake(0, f.origin.y, newW, newH);
             v.bounds = CGRectMake(0, 0, newW, newH);
             [v setNeedsLayout];
             [v layoutIfNeeded];
         }
 
+        // 2. Right-Edge Magnetic Snap: Pull subviews floating off-screen back to visible edge (for controls)
         if (!isVideoView && f.origin.x + f.size.width > targetW + 2.0 && f.size.width < targetW && f.size.width > 10.0) {
             CGFloat newX = targetW - f.size.width - 12.0;
             if (newX < 0) newX = 0;
@@ -524,7 +568,9 @@ static void lockRNOrientationToPortrait(void) {
         if (v.hidden) continue;
 
         NSString *cls = NSStringFromClass([v class]);
-        if ([cls containsString:@"CoverView"] || [cls containsString:@"NavBar"]) continue;
+        if ([cls containsString:@"CoverView"] || [cls containsString:@"NavBar"]) {
+            continue;
+        }
 
         if ([v isKindOfClass:[UIButton class]]) {
             UIButton *btn = (UIButton *)v;
@@ -566,18 +612,25 @@ static void lockRNOrientationToPortrait(void) {
         @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
         @"toggleFullScreen", @"switchFullScreen"
     ];
-    NSArray *fullscreenProps = @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullScreen:", @"setFullscreen:"];
 
     for (id obj in @[topVC ?: [NSNull null], topVC.parentViewController ?: [NSNull null]]) {
         if (obj == [NSNull null]) continue;
         UIViewController *vc = (UIViewController *)obj;
 
-        for (NSString *selName in fullscreenProps) {
+        for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullScreen:", @"setFullscreen:"]) {
             SEL sel = NSSelectorFromString(selName);
             if ([vc respondsToSelector:sel]) {
-                callVoidBoolSelector(vc, sel, NO);
-                didTrigger = YES;
-                break;
+                NSMethodSignature *sig = [vc methodSignatureForSelector:sel];
+                if (sig && sig.numberOfArguments == 3) {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setSelector:sel];
+                    [inv setTarget:vc];
+                    BOOL val = NO;
+                    [inv setArgument:&val atIndex:2];
+                    [inv invoke];
+                    didTrigger = YES;
+                    break;
+                }
             }
         }
         if (didTrigger) break;
@@ -585,7 +638,10 @@ static void lockRNOrientationToPortrait(void) {
         for (NSString *s in safeExitSels) {
             SEL sel = NSSelectorFromString(s);
             if ([vc respondsToSelector:sel]) {
-                callVoidSelector(vc, sel);
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                [vc performSelector:sel];
+                #pragma clang diagnostic pop
                 didTrigger = YES;
                 break;
             }
@@ -604,19 +660,30 @@ static void lockRNOrientationToPortrait(void) {
             for (NSString *s in @[@"dismissFullscreenPlayer", @"exitFullScreen", @"exitFullscreen", @"shrinkScreen", @"toSmallScreen"]) {
                 SEL sel = NSSelectorFromString(s);
                 if ([v respondsToSelector:sel]) {
-                    callVoidSelector(v, sel);
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [v performSelector:sel];
+                    #pragma clang diagnostic pop
                     didTrigger = YES;
                     break;
                 }
             }
             if (didTrigger) break;
 
-            for (NSString *selName in fullscreenProps) {
+            for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullscreen:", @"setFullScreen:"]) {
                 SEL sel = NSSelectorFromString(selName);
                 if ([v respondsToSelector:sel]) {
-                    callVoidBoolSelector(v, sel, NO);
-                    didTrigger = YES;
-                    break;
+                    NSMethodSignature *sig = [v methodSignatureForSelector:sel];
+                    if (sig && sig.numberOfArguments == 3) {
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        [inv setSelector:sel];
+                        [inv setTarget:v];
+                        BOOL val = NO;
+                        [inv setArgument:&val atIndex:2];
+                        [inv invoke];
+                        didTrigger = YES;
+                        break;
+                    }
                 }
             }
             if (didTrigger) break;
@@ -639,14 +706,18 @@ static void lockRNOrientationToPortrait(void) {
 
 + (CGFloat)getSafeAreaTop:(UIWindow *)window {
     if (@available(iOS 11.0, *)) {
-        if (window && window.safeAreaInsets.top > 0) return window.safeAreaInsets.top;
+        if (window && window.safeAreaInsets.top > 0) {
+            return window.safeAreaInsets.top;
+        }
     }
     return 20.0;
 }
 
 + (CGFloat)getSafeAreaBottom:(UIWindow *)window {
     if (@available(iOS 11.0, *)) {
-        if (window && window.safeAreaInsets.bottom > 0) return window.safeAreaInsets.bottom;
+        if (window && window.safeAreaInsets.bottom > 0) {
+            return window.safeAreaInsets.bottom;
+        }
     }
     return 0.0;
 }
@@ -671,6 +742,7 @@ static void lockRNOrientationToPortrait(void) {
     CGPoint ptBottomLeft = CGPointMake(50.0, screenH - safeBottom - 48.0);
 
     [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
     });
@@ -706,8 +778,10 @@ static void lockRNOrientationToPortrait(void) {
         UIViewController *curr = vc;
         while (curr) {
             NSString *cls = NSStringFromClass([curr class]);
-            if ([cls containsString:@"WAWebView"] || [cls containsString:@"WAGame"] || 
-                [cls containsString:@"Skyline"] || [cls containsString:@"WAUI"]) {
+            if ([cls containsString:@"WAWebView"] || 
+                [cls containsString:@"WAGame"] || 
+                [cls containsString:@"Skyline"] || 
+                [cls containsString:@"WAUI"]) {
                 return YES;
             }
             curr = curr.parentViewController;
@@ -720,21 +794,27 @@ static void lockRNOrientationToPortrait(void) {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
 
-    NSString *cls = NSStringFromClass([view class]);
-    if ([cls containsString:@"Unity"] || [cls containsString:@"EAGL"] || 
-        [cls containsString:@"MTKView"] || [cls containsString:@"FMetalView"] || 
-        [cls containsString:@"XRNativeGame"] || [cls containsString:@"OpenGL"]) {
+    NSString *viewClassStr = NSStringFromClass([view class]);
+    if ([viewClassStr containsString:@"Unity"] || 
+        [viewClassStr containsString:@"EAGL"] || 
+        [viewClassStr containsString:@"MTKView"] || 
+        [viewClassStr containsString:@"FMetalView"] || 
+        [viewClassStr containsString:@"XRNativeGame"] || 
+        [viewClassStr containsString:@"OpenGL"]) {
         return YES;
     }
 
     for (UIView *subview in view.subviews) {
-        if ([self hasGameEngineView:subview depth:depth + 1]) return YES;
+        if ([self hasGameEngineView:subview depth:depth + 1]) {
+            return YES;
+        }
     }
     return NO;
 }
 
 // Anti-Bounce Force Rotation Engine
 - (void)forcePortraitOrientation {
+    // 1. Enter strict Portrait-Only lock state
     g_forceAllowPortrait = YES;
     lockRNOrientationToPortrait();
 
@@ -744,12 +824,19 @@ static void lockRNOrientationToPortrait(void) {
         if (self.window.rootViewController) [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
     }
 
+    // 2. Invocation-based private orientation assignment
     @try {
         SEL setOriSel = NSSelectorFromString(@"setOrientation:");
-        Method m = class_getInstanceMethod([UIDevice class], setOriSel);
-        if (m) {
-            void (*fn)(id, SEL, NSInteger) = (void (*)(id, SEL, NSInteger))method_getImplementation(m);
-            if (fn) fn([UIDevice currentDevice], setOriSel, UIInterfaceOrientationPortrait);
+        if ([[UIDevice currentDevice] respondsToSelector:setOriSel]) {
+            NSMethodSignature *sig = [[UIDevice currentDevice] methodSignatureForSelector:setOriSel];
+            if (sig && sig.numberOfArguments == 3) {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setSelector:setOriSel];
+                [inv setTarget:[UIDevice currentDevice]];
+                NSInteger ori = UIInterfaceOrientationPortrait;
+                [inv setArgument:&ori atIndex:2];
+                [inv invoke];
+            }
         }
     } @catch (NSException *e) {}
 
@@ -760,6 +847,7 @@ static void lockRNOrientationToPortrait(void) {
 
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
 
+    // 3. Modern WindowScene Geometry Request
     if (@available(iOS 16.0, *)) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
@@ -777,13 +865,17 @@ static void lockRNOrientationToPortrait(void) {
         [UIViewController attemptRotationToDeviceOrientation];
     }
 
+    // 4. Initial bridge notification
     UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
     notifyReactNativeOrientationBridge(win);
 
+    // 5. Single Settled Stage (0.35s - after rotation finishes):
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindow *currWin = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
         if (currWin) {
-            CGFloat targetW = MIN(currWin.bounds.size.width, currWin.bounds.size.height);
+            CGFloat screenW = currWin.bounds.size.width;
+            CGFloat screenH = currWin.bounds.size.height;
+            CGFloat targetW = MIN(screenW, screenH);
 
             [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
             #pragma clang diagnostic push
@@ -793,6 +885,7 @@ static void lockRNOrientationToPortrait(void) {
 
             notifyReactNativeOrientationBridge(currWin);
 
+            // Tap verified exit button if present
             UIView *targetBtn = [LeftPanWindowHelper findActualPlayerBackButton:currWin window:currWin];
             if (targetBtn) {
                 [LeftPanWindowHelper simulateTapOnVerifiedView:targetBtn inWindow:currWin];
@@ -804,7 +897,8 @@ static void lockRNOrientationToPortrait(void) {
         }
     });
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 6. Hold portrait lock for 2.0s to completely suppress gravity accelerometer bounce-back
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         g_forceAllowPortrait = NO;
         if (@available(iOS 16.0, *)) {
             if (topVC) [topVC setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -977,17 +1071,8 @@ static void lockRNOrientationToPortrait(void) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    BOOL videoHandled = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
+                    [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
-
-                    if (!videoHandled && !isSpecialApp_Amap()) {
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-                            if (win && win.bounds.size.width > win.bounds.size.height) {
-                                [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
-                            }
-                        });
-                    }
                 } else {
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
@@ -1025,15 +1110,21 @@ static void lockRNOrientationToPortrait(void) {
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
-        if (loc.x < screenWidth - kLPVLandscapeZoneWidth) return NO;
+        if (loc.x < screenWidth - kLPVLandscapeZoneWidth) {
+            return NO;
+        }
     } else {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
-        if (loc.x < screenWidth * ratio) return NO;
+        if (loc.x < screenWidth * ratio) {
+            return NO;
+        }
     }
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) return NO;
+    if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
+        return NO;
+    }
 
     if (!isSpecialApp_Huya() && !isSpecialApp_Amap()) {
         if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
@@ -1043,17 +1134,29 @@ static void lockRNOrientationToPortrait(void) {
     }
 
     CGPoint rawVel = [self.pan rawVelocityInView:self.pan.view];
-    if (rawVel.x >= kLPVGestureStartVelocityThreshold) return NO;
-    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) return NO;
+    if (rawVel.x >= kLPVGestureStartVelocityThreshold) { 
+        return NO;
+    }
+    if (fabs(rawVel.x) <= fabs(rawVel.y) * 1.3) { 
+        return NO;
+    }
 
-    if (![LeftPanWindowHelper canGoBack:topVC window:window isLandscape:isLandscape]) return NO;
+    if (![LeftPanWindowHelper canGoBack:topVC window:window isLandscape:isLandscape]) {
+        return NO;
+    }
 
     return YES;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (gestureRecognizer == self.pan) {
-        if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) return NO;
+        if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
+            return NO;
+        }
+
+#if ENABLE_DEBUG_LOGGING
+        return YES;
+#endif
         return YES;
     }
     return NO;
@@ -1083,22 +1186,34 @@ static UIInterfaceOrientationMask swiz_VC_supportedInterfaceOrientations(UIViewC
 
 static BOOL (*orig_VC_shouldAutorotate)(id, SEL);
 static BOOL swiz_VC_shouldAutorotate(UIViewController *self, SEL _cmd) {
-    if (g_forceAllowPortrait) return YES;
-    if (orig_VC_shouldAutorotate) return orig_VC_shouldAutorotate(self, _cmd);
+    if (g_forceAllowPortrait) {
+        return YES;
+    }
+    if (orig_VC_shouldAutorotate) {
+        return orig_VC_shouldAutorotate(self, _cmd);
+    }
     return YES;
 }
 
 static UIDeviceOrientation (*orig_Device_orientation)(id, SEL);
 static UIDeviceOrientation swiz_Device_orientation(UIDevice *self, SEL _cmd) {
-    if (g_forceAllowPortrait) return UIDeviceOrientationPortrait;
-    if (orig_Device_orientation) return orig_Device_orientation(self, _cmd);
+    if (g_forceAllowPortrait) {
+        return UIDeviceOrientationPortrait;
+    }
+    if (orig_Device_orientation) {
+        return orig_Device_orientation(self, _cmd);
+    }
     return UIDeviceOrientationPortrait;
 }
 
 static UIInterfaceOrientation (*orig_App_statusBarOrientation)(id, SEL);
 static UIInterfaceOrientation swiz_App_statusBarOrientation(UIApplication *self, SEL _cmd) {
-    if (g_forceAllowPortrait) return UIInterfaceOrientationPortrait;
-    if (orig_App_statusBarOrientation) return orig_App_statusBarOrientation(self, _cmd);
+    if (g_forceAllowPortrait) {
+        return UIInterfaceOrientationPortrait;
+    }
+    if (orig_App_statusBarOrientation) {
+        return orig_App_statusBarOrientation(self, _cmd);
+    }
     return UIInterfaceOrientationPortrait;
 }
 
