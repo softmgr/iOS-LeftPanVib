@@ -43,16 +43,6 @@ static BOOL isSpecialApp_Amap(void) {
     return isAmap;
 }
 
-static BOOL isSpecialApp_Bilibili(void) {
-    static BOOL isBili = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-        isBili = [bundleID containsString:@"bili"] || [bundleID containsString:@"danmaku"];
-    });
-    return isBili;
-}
-
 static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -218,7 +208,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) return YES;
         current = current.parentViewController;
     }
-    return NO;
+    // Allow pure fake-landscape videos to utilize gyro broadcast even without active NavVCs
+    return YES;
 }
 
 #pragma mark - Amap Dual-Strike Return Engine
@@ -362,32 +353,30 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return YES;
 }
 
+// Universal Gyroscope Breaker (Runs synchronously)
 - (void)forcePortraitOrientation {
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
-        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
-        [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
-        
-        if (@available(iOS 16.0, *)) {
-            UIWindowScene *scene = (UIWindowScene *)strongSelf.window.windowScene;
-            if (!scene) {
-                for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                    if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
-                        scene = (UIWindowScene *)s; break;
-                    }
+    // 1. Unconditionally broadcast fake portrait gyro to shatter custom video player pseudo-landscapes
+    [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
+    [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
+    
+    // 2. Request formal geometry update for native rotation
+    if (@available(iOS 16.0, *)) {
+        UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
+        if (!scene) {
+            for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
+                    scene = (UIWindowScene *)s; break;
                 }
             }
-            if (scene) {
-                UIWindowSceneGeometryPreferencesIOS *geom = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
-                [scene requestGeometryUpdateWithPreferences:geom errorHandler:nil];
-            }
-        } else {
-            [UIViewController attemptRotationToDeviceOrientation];
         }
-    });
+        if (scene) {
+            UIWindowSceneGeometryPreferencesIOS *geom = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
+            [scene requestGeometryUpdateWithPreferences:geom errorHandler:nil];
+        }
+    } else {
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
 }
 
 #pragma mark - Debug Information Dumper
@@ -471,9 +460,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
+        // Force fallback for navigation controllers that natively override or disable standard transitions
         if (nav && !isLandscape) {
-            // Force Fallback for notorious architecture blockers (including Bilibili's simulated landscape)
-            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap() || isSpecialApp_Bilibili()) {
+            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -545,7 +534,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         
         if (success) {
-            BOOL supportsPortrait = isLandscape ? [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC] : YES;
+            BOOL supportsPortrait = [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC];
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
@@ -555,22 +544,22 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 [feedback impactOccurred];
                 #endif
 #endif
-                if (isLandscape && supportsPortrait) {
+                
+                // 1. UNIVERSAL FAKE-LANDSCAPE BREAKER
+                // Broadcast physical orientation changes globally to crack gyroscope-locked players (Bilibili, etc.)
+                if (supportsPortrait) {
                     [self forcePortraitOrientation];
-                    
-                    // Double Insurance for Bilibili true landscape: force portrait might be ignored, so pop VC directly.
-                    if (isSpecialApp_Bilibili()) {
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                            [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
-                        });
-                    }
-                } else {
+                }
+
+                // 2. TIMED UI TEARDOWN
+                // Wait a microsecond for the app's internal JS/Gyro engine to shrink views gracefully, avoiding deadlocks.
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
-                        return;
+                    } else {
+                        [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
                     }
-                    [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
-                }
+                });
             });
         }
     }
