@@ -208,8 +208,49 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) return YES;
         current = current.parentViewController;
     }
-    // Allow pure fake-landscape videos to utilize gyro broadcast even without active NavVCs
+    // Universal support for fake-landscape players even if nav controllers are hidden
     return YES;
+}
+
+#pragma mark - Universal Fake Landscape & Gyroscope Engine
+
+// Accurately detect if the app is physically portraying a landscape view (True or Fake)
++ (BOOL)isLandscapeState:(UIWindow *)window isSystemLandscape:(BOOL)isSystemLandscape {
+    // 1. True Landscape (System level)
+    if (isSystemLandscape) return YES;
+    if (!window) return NO;
+    
+    // 2. Fake Landscape Detection (Transform / Oversized bounds)
+    CGFloat screenW = window.bounds.size.width;
+    CGFloat screenH = window.bounds.size.height;
+    CGFloat screenArea = screenW * screenH;
+    
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (v.hidden || v.alpha < 0.05) continue;
+        
+        CGFloat viewArea = v.bounds.size.width * v.bounds.size.height;
+        // Optimization: Only inspect large player container views (covering > 20% of screen)
+        if (viewArea > screenArea * 0.20) {
+            
+            // Check 1: Has the view been rotated 90 degrees by a CGAffineTransform?
+            CGAffineTransform t = v.transform;
+            if (fabs(t.a) < 0.1 && fabs(t.d) < 0.1) {
+                if ((t.b > 0.5 && t.c < -0.5) || (t.b < -0.5 && t.c > 0.5)) {
+                    return YES;
+                }
+            }
+            
+            // Check 2: Oversized container (drawing landscape width on a portrait screen)
+            if (screenW < screenH && v.bounds.size.width >= screenH - 50) {
+                return YES;
+            }
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return NO;
 }
 
 #pragma mark - Amap Dual-Strike Return Engine
@@ -324,38 +365,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-+ (BOOL)isPortraitSupportedForWindow:(UIWindow *)window topVC:(UIViewController *)topVC {
-    if (topVC) {
-        UIInterfaceOrientationMask vcMask = topVC.supportedInterfaceOrientations;
-        if (vcMask != 0 && !(vcMask & UIInterfaceOrientationMaskPortrait) && !(vcMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
-            return NO; 
-        }
-    }
-    UIInterfaceOrientationMask appMask = [[UIApplication sharedApplication] supportedInterfaceOrientationsForWindow:window];
-    if (appMask != 0 && !(appMask & UIInterfaceOrientationMaskPortrait) && !(appMask & UIInterfaceOrientationMaskPortraitUpsideDown)) {
-        return NO; 
-    }
-    NSArray *supportedOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations"];
-    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
-        NSArray *ipadOrientations = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UISupportedInterfaceOrientations~ipad"];
-        if (ipadOrientations) supportedOrientations = ipadOrientations;
-    }
-    if (supportedOrientations && [supportedOrientations isKindOfClass:[NSArray class]]) {
-        BOOL hasPortrait = NO;
-        for (NSString *orientation in supportedOrientations) {
-            if ([orientation isEqualToString:@"UIInterfaceOrientationPortrait"] ||
-                [orientation isEqualToString:@"UIInterfaceOrientationPortraitUpsideDown"]) {
-                hasPortrait = YES; break;
-            }
-        }
-        if (!hasPortrait) return NO; 
-    }
-    return YES;
-}
-
-// Universal Gyroscope Breaker (Runs synchronously)
 - (void)forcePortraitOrientation {
-    // 1. Unconditionally broadcast fake portrait gyro to shatter custom video player pseudo-landscapes
+    // 1. Universally broadcast fake portrait gyro to shatter custom video player pseudo-landscapes
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
@@ -460,8 +471,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        // Force fallback for navigation controllers that natively override or disable standard transitions
         if (nav && !isLandscape) {
+            // Apply universally to tricky UI structures including Amap and Tieba
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
@@ -534,7 +545,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         
         if (success) {
-            BOOL supportsPortrait = [LeftPanWindowHelper isPortraitSupportedForWindow:self.window topVC:topVC];
+            // Determine if the app is currently in Landscape mode (True system-level or Fake visual-level)
+            BOOL isFakeOrTrueLandscape = [LeftPanWindowHelper isLandscapeState:self.window isSystemLandscape:isLandscape];
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
@@ -544,22 +556,20 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 [feedback impactOccurred];
                 #endif
 #endif
-                
-                // 1. UNIVERSAL FAKE-LANDSCAPE BREAKER
-                // Broadcast physical orientation changes globally to crack gyroscope-locked players (Bilibili, etc.)
-                if (supportsPortrait) {
+                if (isFakeOrTrueLandscape) {
+                    // UNIVERSAL VIDEO & LANDSCAPE ESCAPER:
+                    // If visually sideways, swiping left should ONLY return to portrait.
+                    // DO NOT forcibly pop the View Controller to prevent abruptly closing the video/page!
                     [self forcePortraitOrientation];
-                }
-
-                // 2. TIMED UI TEARDOWN
-                // Wait a microsecond for the app's internal JS/Gyro engine to shrink views gracefully, avoiding deadlocks.
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                } else {
+                    // NORMAL PORTRAIT MODE:
+                    // Swipe left means go back/close page.
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
                     } else {
                         [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
                     }
-                });
+                }
             });
         }
     }
