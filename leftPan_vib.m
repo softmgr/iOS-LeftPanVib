@@ -7,7 +7,7 @@
 #define ENABLE_DEBUG_LOGGING 0
 
 // ---------------------------------------------------------
-// CONFIGURATION: Physical Zone, Speed & Distance Thresholds
+// CONFIGURATION (Constants for easy maintenance)
 // ---------------------------------------------------------
 #define kLPVPortraitZoneRatio (4.0 / 5.0)        
 #define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
@@ -22,7 +22,7 @@
 static char kWindowHelperKey;
 static volatile BOOL g_forceAllowPortrait = NO;
 
-#pragma mark - App Whitelist & Edge Case Handling
+#pragma mark - Special App Whitelist
 
 static BOOL isSpecialApp_Huya(void) {
     static BOOL isHuya = NO;
@@ -59,7 +59,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Custom Inverted Pan Gesture Recognizer
+#pragma mark - Custom Gesture Recognizer
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
 - (CGPoint)rawVelocityInView:(UIView *)view;
@@ -69,19 +69,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
-// Invert X-axis translation so leftward pan is treated as positive progress
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
-// Invert X-axis velocity so leftward flick is treated as positive velocity
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
 }
 @end
 
-#pragma mark - Main Window Gesture Helper
+#pragma mark - Main Window Helper
 
 @interface LeftPanWindowHelper : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIWindow *window;
@@ -106,7 +104,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return self;
 }
 
-#pragma mark - View Hierarchy Traversal & Navigation Introspection
+#pragma mark - Universal Hierarchy Armor-Piercing Algorithm
 
 + (UIWindow *)resolveKeyWindow {
     UIWindow *foundWindow = nil;
@@ -133,7 +131,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return foundWindow;
 }
 
-// Recursively inspect top visible UIViewController, resolving modals, tabs, and child containers
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -153,7 +150,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return root;
 }
 
-// Locate an active UINavigationController ancestor capable of popping
 + (UINavigationController *)findValidNavigationControllerFor:(UIViewController *)vc {
     UIViewController *current = vc;
     while (current) {
@@ -190,7 +186,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Generic Flutter Framework Inspection: Detect embedded PlatformView / Video texture layers
 + (BOOL)isFlutterSubpageActive:(UIViewController *)topVC {
     if (!topVC || ![topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) return NO;
     UIView *fView = topVC.view;
@@ -212,18 +207,16 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Universal validation engine to decide whether a return gesture can be dispatched
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
-    if (!topVC) return NO;
-
-    // 1. Flutter Framework: Yield landscape control to protect native dual-axis playback gestures
-    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
+    // 1. Flutter Framework: Isolate completely, protect dual-axis player controls in landscape
+    if (topVC && [topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         if (isLandscape) return NO;
         return [self isFlutterSubpageActive:topVC];
     }
 
-    // 2. Standard Landscape: Always permit exiting full-screen video
+    // 2. Standard Landscape: Always allow return to portrait
     if (isLandscape) return YES;
+    if (!topVC) return NO;
     
     if (isTiebaPBViewController(topVC)) return YES;
     
@@ -291,7 +284,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// React Native DeviceEventEmitter: Dispatch orientation events directly to JavaScript bridge
 static void notifyReactNativeOrientationBridge(UIWindow *window) {
     if (!window) return;
     UIView *rootView = nil;
@@ -362,7 +354,6 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     }
 }
 
-// Locate physical exit button in the upper-left corner of the player view
 + (UIView *)findActualPlayerBackButton:(UIView *)root window:(UIWindow *)window {
     if (!root || !window) return nil;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -401,7 +392,6 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     return bestCandidate;
 }
 
-// Synthesize touch events for React Native TouchHandler & UIKit targets
 + (void)simulateTapOnVerifiedView:(UIView *)targetView inWindow:(UIWindow *)window {
     if (!targetView || !window) return;
     CGRect r = [targetView convertRect:targetView.bounds toView:window];
@@ -541,7 +531,6 @@ static void lockRNOrientationToPortrait(void) {
     }
 }
 
-// Constrain video container views to portrait width while preserving screen/layout root containers
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -554,7 +543,6 @@ static void lockRNOrientationToPortrait(void) {
 
         NSString *cls = NSStringFromClass([v class]);
         
-        // Skip fundamental navigation, root, transition, and scroll wrappers
         if ([cls containsString:@"Window"] || [cls containsString:@"Transition"] || 
             [cls containsString:@"Layout"] || [cls containsString:@"Screen"] || 
             [cls containsString:@"Root"] || [cls containsString:@"Scroll"] || 
@@ -635,7 +623,6 @@ static void lockRNOrientationToPortrait(void) {
     return NO;
 }
 
-// Method reflection fallback to invoke exit full-screen routines
 + (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
 
@@ -860,7 +847,7 @@ static void lockRNOrientationToPortrait(void) {
     return NO;
 }
 
-// Anti-Bounce Rotation Controller: Hard-locks portrait during transitions to prevent accelerometer bouncing
+// Anti-Bounce Force Rotation Engine
 - (void)forcePortraitOrientation {
     g_forceAllowPortrait = YES;
     lockRNOrientationToPortrait();
@@ -1086,13 +1073,6 @@ static void lockRNOrientationToPortrait(void) {
     }
 #pragma clang diagnostic pop
 
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
-
-    // Generic Flutter Framework Introspection: Disable gesture in landscape to protect dual-axis player controls
-    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")] && isLandscape) {
-        return NO;
-    }
-
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
@@ -1102,6 +1082,8 @@ static void lockRNOrientationToPortrait(void) {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) return NO;
     }
+
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) return NO;
 
