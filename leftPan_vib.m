@@ -11,7 +11,7 @@
 // ---------------------------------------------------------
 #define kLPVPortraitZoneRatio (4.0 / 5.0)        
 #define kLPVHuyaPortraitZoneRatio (4.0 / 5.0)    
-#define kLPVLandscapeZoneWidth 120.0             
+#define kLPVLandscapeZoneWidth 110.0             
 #define kLPVGestureStartVelocityThreshold -40.0
 #define kLPVPortraitSuccessTranslationRatio 0.35     
 #define kLPVHuyaPortraitSuccessTranslationRatio 0.20 
@@ -59,30 +59,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Competing Gesture Freezing Engine
-
-static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer *activePan) {
-    if (!rootView) return;
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
-    while (queue.count > 0) {
-        UIView *v = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
-            if (gr != activePan && gr.isEnabled) {
-                if ([gr isKindOfClass:[UIPanGestureRecognizer class]] ||
-                    [gr isKindOfClass:[UISwipeGestureRecognizer class]] ||
-                    [NSStringFromClass([gr class]) containsString:@"Pan"] ||
-                    [NSStringFromClass([gr class]) containsString:@"Swipe"]) {
-                    gr.enabled = NO;
-                    gr.enabled = YES;
-                }
-            }
-        }
-        [queue addObjectsFromArray:v.subviews];
-    }
-}
-
-#pragma mark - Custom Gesture Recognizer
+#pragma mark - Clean Custom Gesture Recognizer (Restored to v79)
 
 @interface LPVReversePanGesture : UIPanGestureRecognizer
 - (CGPoint)rawVelocityInView:(UIView *)view;
@@ -99,17 +76,6 @@ static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer 
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
-}
-
-- (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)preventedGestureRecognizer {
-    if ([preventedGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
-        return NO;
-    }
-    return YES;
-}
-
-- (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)preventingGestureRecognizer {
-    return NO;
 }
 @end
 
@@ -255,6 +221,7 @@ static void cancelCompetingGesturesInView(UIView *rootView, UIGestureRecognizer 
         return YES; 
     }
     
+    // Flutter SPA Navigation Detector
     if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         return [self isFlutterSubpageActive:topVC];
     }
@@ -411,7 +378,7 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
             if (isLikelyButton) {
                 CGFloat dx = r.origin.x - 55.0;
                 CGFloat dy = r.origin.y - 65.0;
-                CGFloat dist = dx * dx + dy * dy;
+                CGFloat dist = sqrt(dx * dx + dy * dy);
                 if (dist < minDistance) {
                     minDistance = dist;
                     bestCandidate = v;
@@ -915,7 +882,7 @@ static void lockRNOrientationToPortrait(void) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
             for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if (s.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                if (s.activationState == UISceneActivationStateForegroundActive && [s isKindOfClass:[UIWindowScene class]]) {
                     scene = (UIWindowScene *)s; break;
                 }
             }
@@ -988,14 +955,6 @@ static void lockRNOrientationToPortrait(void) {
     [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
     [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
 
-    [log appendFormat:@"\n[All Windows in Process]\n"];
-    @try {
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            [log appendFormat:@"- %@ (F:{%.1f,%.1f,%.1f,%.1f}, Lvl:%.1f, Hidden:%d, Key:%d)\n",
-             NSStringFromClass([w class]), w.frame.origin.x, w.frame.origin.y, w.frame.size.width, w.frame.size.height, w.windowLevel, w.isHidden, w.isKeyWindow];
-        }
-    } @catch (NSException *e) {}
-
     [log appendFormat:@"\n[Controllers]\n"];
     [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
     if (topVC.parentViewController) {
@@ -1031,10 +990,10 @@ static void lockRNOrientationToPortrait(void) {
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
-    UIWindow *window = pan.view.window ?: self.window;
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController ?: self.window.rootViewController];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
 
+    UIWindow *window = pan.view.window ?: self.window;
     BOOL isSystemLandscape = NO;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -1048,8 +1007,6 @@ static void lockRNOrientationToPortrait(void) {
     BOOL isAnyLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
 
     if (pan.state == UIGestureRecognizerStateBegan) {
-        // Cut off player scrubbing gestures in the window immediately
-        cancelCompetingGesturesInView(window, pan);
 
 #if ENABLE_DEBUG_LOGGING
         [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isAnyLandscape];
@@ -1164,6 +1121,22 @@ static void lockRNOrientationToPortrait(void) {
 
 #pragma mark - UIGestureRecognizerDelegate
 
+// ZERO-COLLISION ENGINE: When touch begins, force any scrub pan gestures on the view to require self.pan to fail!
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer == self.pan) {
+        UIView *v = touch.view;
+        while (v && v != self.window) {
+            for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+                if (gr != self.pan && ([gr isKindOfClass:[UIPanGestureRecognizer class]] || [gr isKindOfClass:[UISwipeGestureRecognizer class]])) {
+                    [gr requireGestureRecognizerToFail:self.pan];
+                }
+            }
+            v = v.superview;
+        }
+    }
+    return YES;
+}
+
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
 
@@ -1179,13 +1152,14 @@ static void lockRNOrientationToPortrait(void) {
     }
 #pragma clang diagnostic pop
 
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController ?: self.window.rootViewController];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
     BOOL isLandscape = [LeftPanWindowHelper isAnyLandscapeActive:window topVC:topVC isSystemLandscape:isSystemLandscape];
 
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
 
     if (isLandscape) {
+        // Generously wide 110.0pt zone ensures notch/island/home-bar landscape swipes are 100% accepted
         if (loc.x < screenWidth - kLPVLandscapeZoneWidth) return NO;
     } else {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
@@ -1212,7 +1186,6 @@ static void lockRNOrientationToPortrait(void) {
     return YES;
 }
 
-// LeftPan forces competing pan/scrub gestures to wait for LeftPan to fail!
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (gestureRecognizer == self.pan) {
         if ([otherGestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
@@ -1223,18 +1196,13 @@ static void lockRNOrientationToPortrait(void) {
     return NO;
 }
 
-// LeftPan NEVER waits for any other gesture!
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    return NO;
-}
-
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     return NO;
 }
 
 @end
 
-#pragma mark - Global Runtime Hooks & Window Injection
+#pragma mark - Global Runtime Hooks & Window Injection (Clean v79 Baseline)
 
 static UIInterfaceOrientationMask (*orig_VC_supportedInterfaceOrientations)(id, SEL);
 static UIInterfaceOrientationMask swiz_VC_supportedInterfaceOrientations(UIViewController *self, SEL _cmd) {
@@ -1282,14 +1250,6 @@ static void swiz_UIWindow_makeKeyAndVisible(UIWindow *self, SEL _cmd) {
     attachHelperToWindow(self);
 }
 
-static void (*orig_UIWindow_setHidden)(id, SEL, BOOL);
-static void swiz_UIWindow_setHidden(UIWindow *self, SEL _cmd, BOOL hidden) {
-    orig_UIWindow_setHidden(self, _cmd, hidden);
-    if (!hidden) {
-        attachHelperToWindow(self);
-    }
-}
-
 __attribute__((constructor)) static void init_leftPanGlobal(void) {
     Class vcClass = [UIViewController class];
     Method mSupported = class_getInstanceMethod(vcClass, @selector(supportedInterfaceOrientations));
@@ -1326,26 +1286,10 @@ __attribute__((constructor)) static void init_leftPanGlobal(void) {
         }
     }];
 
-    // Dynamic Orientation Listener: ensure all windows are monitored on physical rotation
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification
-                                                      object:nil
-                                                       queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification *note) {
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            attachHelperToWindow(w);
-        }
-    }];
-
     Class winClass = [UIWindow class];
     Method m = class_getInstanceMethod(winClass, @selector(makeKeyAndVisible));
     if (m) {
         orig_UIWindow_makeKeyAndVisible = (void (*)(id, SEL))method_getImplementation(m);
         method_setImplementation(m, (IMP)swiz_UIWindow_makeKeyAndVisible);
-    }
-
-    Method mSetHidden = class_getInstanceMethod(winClass, @selector(setHidden:));
-    if (mSetHidden) {
-        orig_UIWindow_setHidden = (void (*)(id, SEL, BOOL))method_getImplementation(mSetHidden);
-        method_setImplementation(mSetHidden, (IMP)swiz_UIWindow_setHidden);
     }
 }
