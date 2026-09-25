@@ -194,7 +194,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (isSpecialApp_Amap()) {
         UIWindow *win = window ?: topVC.view.window ?: [self resolveKeyWindow];
         if ([self isAmapHomePage:win ?: topVC.view]) {
-            return NO; // Suppress gesture on root map to avoid exiting app
+            return NO; // Suppress gesture on root map
         }
         return YES; // Enable custom LPV back in Subpages and Navigation
     }
@@ -211,7 +211,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-#pragma mark - Amap Precision Return Engine
+#pragma mark - Amap Dual-Strike Return Engine (Inspired by User)
 
 + (CGFloat)getSafeAreaTop:(UIWindow *)window {
     if (@available(iOS 11.0, *)) {
@@ -243,7 +243,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     UIWindow *targetWin = window ?: topVC.view.window ?: [self resolveKeyWindow];
     if (!targetWin) return;
 
-    CGFloat screenW = targetWin.bounds.size.width;
     CGFloat screenH = targetWin.bounds.size.height;
     CGFloat safeTop = [self getSafeAreaTop:targetWin];
     CGFloat safeBottom = [self getSafeAreaBottom:targetWin];
@@ -252,62 +251,18 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     CGPoint ptBottomLeft = CGPointMake(50.0, screenH - safeBottom - 48.0);
 
     // =========================================================================
-    // Core Logic 1: Center Physical Hit-Test (Immune to recycled off-screen views)
+    // THE DUAL-STRIKE SEQUENCE
+    // Discards complex state checking. Brute-forces the return action by 
+    // consecutively tapping both known exit coordinates safely.
     // =========================================================================
-    CGPoint centerPt = CGPointMake(screenW * 0.5, screenH * 0.5);
-    UIView *centerHit = [targetWin hitTest:centerPt withEvent:nil];
     
-    BOOL isNavigating = YES; // Assume Navigation (Map) by default
-    UIView *curr = centerHit;
-    while (curr) {
-        NSString *cls = NSStringFromClass([curr class]);
-        // If the physical center of the screen is covered by a list, it's a Subpage/Settings.
-        if ([cls containsString:@"ScrollView"] || 
-            [cls containsString:@"ListView"] || 
-            [cls containsString:@"TableView"] || 
-            [cls containsString:@"SheetsView"]) {
-            isNavigating = NO;
-            break;
-        }
-        curr = curr.superview;
-    }
-
-    // =========================================================================
-    // Core Logic 2: Top-Left Actionability Validation (Avoid fake buttons)
-    // =========================================================================
-    UIView *hitTopLeft = [targetWin hitTest:ptTopLeft withEvent:nil];
-    BOOL topLeftHasAction = NO;
-    curr = hitTopLeft;
-    for (int i = 0; i < 5 && curr; i++) {
-        // Validate UIControl targets
-        if ([curr isKindOfClass:[UIControl class]] && ((UIControl *)curr).allTargets.count > 0) {
-            topLeftHasAction = YES; 
-            break;
-        }
-        // Validate Tap Gesture Recognizers (AJX native routing method)
-        for (UIGestureRecognizer *gr in curr.gestureRecognizers) {
-            if ([gr isKindOfClass:[UITapGestureRecognizer class]] || [NSStringFromClass([gr class]) containsString:@"Tap"]) {
-                topLeftHasAction = YES; 
-                break;
-            }
-        }
-        if (topLeftHasAction) break;
-        curr = curr.superview;
-    }
-
-    // Decision Making:
-    // If the top-left item is just an inactive turn-icon (has no actionable targets), 
-    // it's a dead end. We MUST be in Navigation mode, so we force Bottom-Left Exit.
-    if (!topLeftHasAction) {
-        isNavigating = YES;
-    }
-
-    // Execute precision Touch UI-Bot injection
-    if (isNavigating) {
+    // 1. Strike Top-Left first (Triggers standard back on Settings/Subpages, harmless on Navigation)
+    [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
+    
+    // 2. Strike Bottom-Left with a microscopic 10ms delay (Triggers Navigation 'X' exit, harmless on Subpages)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self dispatchTouchToWindow:targetWin atPoint:ptBottomLeft];
-    } else {
-        [self dispatchTouchToWindow:targetWin atPoint:ptTopLeft];
-    }
+    });
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
