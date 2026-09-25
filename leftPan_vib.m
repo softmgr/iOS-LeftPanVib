@@ -20,6 +20,7 @@
 #define kLPVFallbackMinFlickTranslation 20.0         
 
 static char kWindowHelperKey;
+static volatile BOOL g_forceAllowPortrait = NO;
 
 #pragma mark - Special App Whitelist
 
@@ -312,6 +313,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
 static void unlockRNOrientation(void) {
     Class oriClass = NSClassFromString(@"Orientation");
+    if (!oriClass) {
+        oriClass = NSClassFromString(@"OrientationLocker");
+    }
     if (oriClass) {
         SEL setOriSel = NSSelectorFromString(@"setOrientation:");
         Method m = class_getClassMethod(oriClass, setOriSel);
@@ -346,7 +350,7 @@ static void unlockRNOrientation(void) {
         if (obj == [NSNull null]) continue;
         UIViewController *vc = (UIViewController *)obj;
         
-        for (NSString *selName in @[@"setFullScreen:", @"setFullscreen:"]) {
+        for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullScreen:", @"setFullscreen:"]) {
             SEL sel = NSSelectorFromString(selName);
             if ([vc respondsToSelector:sel]) {
                 NSMethodSignature *sig = [vc methodSignatureForSelector:sel];
@@ -382,7 +386,7 @@ static void unlockRNOrientation(void) {
     if (window) {
         NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
         int count = 0;
-        while (queue.count > 0 && count < 150) {
+        while (queue.count > 0 && count < 180) {
             UIView *v = queue.firstObject;
             [queue removeObjectAtIndex:0];
             count++;
@@ -400,7 +404,8 @@ static void unlockRNOrientation(void) {
             }
             if (didTrigger) break;
             
-            for (NSString *selName in @[@"setFullscreen:", @"setFullScreen:"]) {
+            // Critical: Matches React Native's standard 'setIsFullscreen:' setter
+            for (NSString *selName in @[@"setIsFullscreen:", @"setIsFullScreen:", @"setFullscreen:", @"setFullScreen:"]) {
                 SEL sel = NSSelectorFromString(selName);
                 if ([v respondsToSelector:sel]) {
                     NSMethodSignature *sig = [v methodSignatureForSelector:sel];
@@ -422,10 +427,7 @@ static void unlockRNOrientation(void) {
         }
     }
     
-    // 3. React Native Orientation Locker Bypass (Safe C-pointer Call)
-    unlockRNOrientation();
-    
-    // 4. Native UIButton search inside player controls
+    // 3. Native UIButton search inside player controls
     if (!didTrigger) {
         UIView *searchRoot = topVC.view ?: window;
         if (searchRoot) {
@@ -433,7 +435,7 @@ static void unlockRNOrientation(void) {
         }
     }
     
-    // 5. Universal Physical Touch Dispatch (Target Top-Left Back Button for RCTView, Flutter, etc.)
+    // 4. Universal Physical Touch Dispatch (Target Top-Left Back Button for RCTView, Flutter, etc.)
     if (window) {
         CGFloat safeLeft = 0.0;
         CGFloat safeTop = 0.0;
@@ -449,7 +451,6 @@ static void unlockRNOrientation(void) {
         [self dispatchTouchToWindow:window atPoint:centerPt];
         
         [self dispatchTouchToWindow:window atPoint:ptTopLeft];
-        didTrigger = YES;
         
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self dispatchTouchToWindow:window atPoint:ptTopLeft];
@@ -561,13 +562,41 @@ static void unlockRNOrientation(void) {
     return NO;
 }
 
+// Breakthrough Force Rotation Engine (Bypasses all app/framework orientation locks)
 - (void)forcePortraitOrientation {
+    g_forceAllowPortrait = YES;
     unlockRNOrientation();
 
-    [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
-    [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    if (@available(iOS 16.0, *)) {
+        if (topVC) [topVC setNeedsUpdateOfSupportedInterfaceOrientations];
+        if (self.window.rootViewController) [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
+    }
+
+    // 1. Invocation-based low-level private orientation assignment (bypasses iOS 16 KVC traps)
+    @try {
+        SEL setOriSel = NSSelectorFromString(@"setOrientation:");
+        if ([[UIDevice currentDevice] respondsToSelector:setOriSel]) {
+            NSMethodSignature *sig = [[UIDevice currentDevice] methodSignatureForSelector:setOriSel];
+            if (sig && sig.numberOfArguments == 3) {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                [inv setSelector:setOriSel];
+                [inv setTarget:[UIDevice currentDevice]];
+                NSInteger ori = UIInterfaceOrientationPortrait;
+                [inv setArgument:&ori atIndex:2];
+                [inv invoke];
+            }
+        }
+    } @catch (NSException *e) {}
+
+    @try {
+        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
+        [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
+    } @catch (NSException *e) {}
+
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
-    
+
+    // 2. Modern WindowScene Geometry Request
     if (@available(iOS 16.0, *)) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
@@ -584,6 +613,14 @@ static void unlockRNOrientation(void) {
     } else {
         [UIViewController attemptRotationToDeviceOrientation];
     }
+
+    // 3. Keep orientation privilege alive across the full animation window
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        g_forceAllowPortrait = NO;
+        if (@available(iOS 16.0, *)) {
+            if (topVC) [topVC setNeedsUpdateOfSupportedInterfaceOrientations];
+        }
+    });
 }
 
 #pragma mark - Debug Information Dumper
@@ -751,8 +788,18 @@ static void unlockRNOrientation(void) {
                 #endif
 #endif
                 if (isAnyLandscape) {
-                    [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
+                    BOOL videoHandled = [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
+                    
+                    // Watchdog Fallback: If not handled by video exit, pop the landscape container directly after 150ms
+                    if (!videoHandled && !isSpecialApp_Amap()) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            UIWindow *win = self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+                            if (win && win.bounds.size.width > win.bounds.size.height) {
+                                [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
+                            }
+                        });
+                    }
                 } else {
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
@@ -851,7 +898,29 @@ static void unlockRNOrientation(void) {
 
 @end
 
-#pragma mark - Global Window Injection
+#pragma mark - Global Runtime Hooks & Window Injection
+
+static UIInterfaceOrientationMask (*orig_VC_supportedInterfaceOrientations)(id, SEL);
+static UIInterfaceOrientationMask swiz_VC_supportedInterfaceOrientations(UIViewController *self, SEL _cmd) {
+    if (g_forceAllowPortrait) {
+        return UIInterfaceOrientationMaskAll;
+    }
+    if (orig_VC_supportedInterfaceOrientations) {
+        return orig_VC_supportedInterfaceOrientations(self, _cmd);
+    }
+    return UIInterfaceOrientationMaskAll;
+}
+
+static BOOL (*orig_VC_shouldAutorotate)(id, SEL);
+static BOOL swiz_VC_shouldAutorotate(UIViewController *self, SEL _cmd) {
+    if (g_forceAllowPortrait) {
+        return YES;
+    }
+    if (orig_VC_shouldAutorotate) {
+        return orig_VC_shouldAutorotate(self, _cmd);
+    }
+    return YES;
+}
 
 static void attachHelperToWindow(UIWindow *window) {
     if (!window || ![window isKindOfClass:[UIWindow class]]) return;
@@ -868,6 +937,20 @@ static void swiz_UIWindow_makeKeyAndVisible(UIWindow *self, SEL _cmd) {
 }
 
 __attribute__((constructor)) static void init_leftPanGlobal(void) {
+    // 1. Swizzle UIViewController orientation privileges to break app-level portrait locks
+    Class vcClass = [UIViewController class];
+    Method mSupported = class_getInstanceMethod(vcClass, @selector(supportedInterfaceOrientations));
+    if (mSupported) {
+        orig_VC_supportedInterfaceOrientations = (UIInterfaceOrientationMask (*)(id, SEL))method_getImplementation(mSupported);
+        method_setImplementation(mSupported, (IMP)swiz_VC_supportedInterfaceOrientations);
+    }
+    Method mAuto = class_getInstanceMethod(vcClass, @selector(shouldAutorotate));
+    if (mAuto) {
+        orig_VC_shouldAutorotate = (BOOL (*)(id, SEL))method_getImplementation(mAuto);
+        method_setImplementation(mAuto, (IMP)swiz_VC_shouldAutorotate);
+    }
+
+    // 2. Global Window Injection
     [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
