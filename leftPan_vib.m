@@ -199,6 +199,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
+    // Always permit gesture if physically held horizontally (fake-landscape video protection)
+    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
+    if (UIDeviceOrientationIsLandscape(devOri)) {
+        return YES;
+    }
+    
     UIViewController *current = topVC;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) return YES;
@@ -208,49 +214,172 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) return YES;
         current = current.parentViewController;
     }
-    // Universal support for fake-landscape players even if nav controllers are hidden
-    return YES;
+    return NO;
 }
 
-#pragma mark - Universal Fake Landscape & Gyroscope Engine
+#pragma mark - Universal Video Player & Fake Landscape Engine
 
-// Accurately detect if the app is physically portraying a landscape view (True or Fake)
-+ (BOOL)isLandscapeState:(UIWindow *)window isSystemLandscape:(BOOL)isSystemLandscape {
-    // 1. True Landscape (System level)
+// Comprehensive orientation check: combines system, hardware gyro, and visual transform layers
++ (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
-    if (!window) return NO;
     
-    // 2. Fake Landscape Detection (Transform / Oversized bounds)
-    CGFloat screenW = window.bounds.size.width;
-    CGFloat screenH = window.bounds.size.height;
-    CGFloat screenArea = screenW * screenH;
+    // Check physical device orientation (detected by hardware accelerometer/gyro)
+    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
+    if (UIDeviceOrientationIsLandscape(devOri)) {
+        return YES;
+    }
     
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
-    while (queue.count > 0) {
-        UIView *v = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        if (v.hidden || v.alpha < 0.05) continue;
-        
-        CGFloat viewArea = v.bounds.size.width * v.bounds.size.height;
-        // Optimization: Only inspect large player container views (covering > 20% of screen)
-        if (viewArea > screenArea * 0.20) {
+    if (window && window.bounds.size.width > window.bounds.size.height) {
+        return YES;
+    }
+    
+    if (topVC && topVC.isViewLoaded && topVC.view.bounds.size.width > topVC.view.bounds.size.height) {
+        return YES;
+    }
+    
+    // Scan for 90-degree rotated player container views
+    if (window) {
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:window];
+        int count = 0;
+        while (queue.count > 0 && count < 80) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            count++;
+            if (v.hidden || v.alpha < 0.05) continue;
             
-            // Check 1: Has the view been rotated 90 degrees by a CGAffineTransform?
             CGAffineTransform t = v.transform;
             if (fabs(t.a) < 0.1 && fabs(t.d) < 0.1) {
                 if ((t.b > 0.5 && t.c < -0.5) || (t.b < -0.5 && t.c > 0.5)) {
                     return YES;
                 }
             }
-            
-            // Check 2: Oversized container (drawing landscape width on a portrait screen)
-            if (screenW < screenH && v.bounds.size.width >= screenH - 50) {
-                return YES;
-            }
+            [queue addObjectsFromArray:v.subviews];
         }
-        [queue addObjectsFromArray:v.subviews];
     }
     return NO;
+}
+
+// Universally exit full-screen mode on any video player without closing the underlying VC
++ (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
+    BOOL didTrigger = NO;
+    
+    // 1. Selector Reflection on topVC and parent containers
+    NSMutableArray *targets = [NSMutableArray array];
+    if (topVC) [targets addObject:topVC];
+    if (topVC.parentViewController) [targets addObject:topVC.parentViewController];
+    
+    for (id obj in targets) {
+        UIViewController *vc = (UIViewController *)obj;
+        
+        // 1.1 Direct Boolean setters
+        for (NSString *selName in @[@"setFullScreen:", @"setFullscreen:"]) {
+            SEL sel = NSSelectorFromString(selName);
+            if ([vc respondsToSelector:sel]) {
+                NSMethodSignature *sig = [vc methodSignatureForSelector:sel];
+                if (sig && sig.numberOfArguments == 3) {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setSelector:sel];
+                    [inv setTarget:vc];
+                    BOOL val = NO;
+                    [inv setArgument:&val atIndex:2];
+                    [inv invoke];
+                    didTrigger = YES;
+                    break;
+                }
+            }
+        }
+        if (didTrigger) break;
+        
+        // 1.2 Actionable method signatures
+        NSArray *exitSels = @[
+            @"exitFullScreen", @"exitFullscreen", @"exitFullScreenAnimated:",
+            @"shrinkScreen", @"toSmallScreen", @"changeToSmallScreen", @"smallScreen",
+            @"toggleFullScreen", @"toggleFullScreen:", @"switchFullScreen",
+            @"toPortrait", @"changeToPortrait", @"didClickBackBtn:", @"onBackBtnClicked:",
+            @"onBackClick:", @"backBtnClick:", @"backButtonClicked:", @"backButtonAction:",
+            @"backAction:", @"backAction", @"clickBack:", @"playerBackAction:"
+        ];
+        
+        for (NSString *s in exitSels) {
+            SEL sel = NSSelectorFromString(s);
+            if ([vc respondsToSelector:sel]) {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                if ([s hasSuffix:@":"]) {
+                    [vc performSelector:sel withObject:nil];
+                } else {
+                    [vc performSelector:sel];
+                }
+                #pragma clang diagnostic pop
+                didTrigger = YES;
+                break;
+            }
+        }
+        if (didTrigger) break;
+    }
+    
+    // 2. Traversal for Player Back / Exit Buttons
+    UIView *searchRoot = topVC.view ?: window;
+    if (searchRoot) {
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:searchRoot];
+        while (queue.count > 0) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            if (v.hidden || v.alpha < 0.05) continue;
+            
+            if ([v isKindOfClass:[UIButton class]]) {
+                UIButton *btn = (UIButton *)v;
+                CGRect absFrame = [btn convertRect:btn.bounds toView:window];
+                
+                BOOL isExitBtn = NO;
+                
+                // Inspect registered actions
+                for (id target in [btn allTargets]) {
+                    NSArray *actions = [btn actionsForTarget:target forControlEvent:UIControlEventTouchUpInside];
+                    for (NSString *act in actions) {
+                        NSString *low = [act lowercaseString];
+                        if ([low containsString:@"back"] || [low containsString:@"exit"] || 
+                            [low containsString:@"shrink"] || [low containsString:@"small"] || 
+                            [low containsString:@"screen"]) {
+                            isExitBtn = YES;
+                            break;
+                        }
+                    }
+                    if (isExitBtn) break;
+                }
+                
+                // Geometric heuristic: Top-Left Back Button in player bar
+                if (!isExitBtn) {
+                    if (absFrame.origin.x <= 90.0 && absFrame.origin.y <= 90.0 &&
+                        absFrame.size.width >= 20.0 && absFrame.size.width <= 90.0 &&
+                        absFrame.size.height >= 20.0 && absFrame.size.height <= 90.0) {
+                        isExitBtn = YES;
+                    }
+                }
+                
+                // Geometric heuristic: Bottom-Right Fullscreen Toggle Button
+                if (!isExitBtn) {
+                    CGFloat w = window.bounds.size.width;
+                    CGFloat h = window.bounds.size.height;
+                    if (absFrame.origin.x >= w - 90.0 && absFrame.origin.y >= h - 90.0 &&
+                        absFrame.size.width >= 20.0 && absFrame.size.height >= 20.0) {
+                        isExitBtn = YES;
+                    }
+                }
+                
+                if (isExitBtn) {
+                    [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                    [btn touchesBegan:[NSSet set] withEvent:nil];
+                    [btn touchesEnded:[NSSet set] withEvent:nil];
+                    didTrigger = YES;
+                    break;
+                }
+            }
+            [queue addObjectsFromArray:v.subviews];
+        }
+    }
+    
+    return didTrigger;
 }
 
 #pragma mark - Amap Dual-Strike Return Engine
@@ -366,12 +495,10 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 }
 
 - (void)forcePortraitOrientation {
-    // 1. Universally broadcast fake portrait gyro to shatter custom video player pseudo-landscapes
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationUnknown) forKey:@"orientation"];
     [[UIDevice currentDevice] setValue:@(UIDeviceOrientationPortrait) forKey:@"orientation"];
     [[NSNotificationCenter defaultCenter] postNotificationName:UIDeviceOrientationDidChangeNotification object:[UIDevice currentDevice]];
     
-    // 2. Request formal geometry update for native rotation
     if (@available(iOS 16.0, *)) {
         UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
         if (!scene) {
@@ -472,7 +599,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            // Apply universally to tricky UI structures including Amap and Tieba
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
@@ -545,8 +671,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         
         if (success) {
-            // Determine if the app is currently in Landscape mode (True system-level or Fake visual-level)
-            BOOL isFakeOrTrueLandscape = [LeftPanWindowHelper isLandscapeState:self.window isSystemLandscape:isLandscape];
+            BOOL isAnyLandscape = [LeftPanWindowHelper isAnyLandscapeActive:self.window topVC:topVC isSystemLandscape:isLandscape];
             
             dispatch_async(dispatch_get_main_queue(), ^{
 #ifndef DISABLE_VIBRATION
@@ -556,14 +681,13 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 [feedback impactOccurred];
                 #endif
 #endif
-                if (isFakeOrTrueLandscape) {
-                    // UNIVERSAL VIDEO & LANDSCAPE ESCAPER:
-                    // If visually sideways, swiping left should ONLY return to portrait.
-                    // DO NOT forcibly pop the View Controller to prevent abruptly closing the video/page!
+                if (isAnyLandscape) {
+                    // 1. In Landscape mode: ONLY exit full-screen video back to portrait.
+                    // Absolutely DO NOT pop or dismiss the view controller here!
+                    [LeftPanWindowHelper exitVideoFullScreen:topVC window:self.window];
                     [self forcePortraitOrientation];
                 } else {
-                    // NORMAL PORTRAIT MODE:
-                    // Swipe left means go back/close page.
+                    // 2. In Portrait mode: perform standard page close/pop.
                     if (isSpecialApp_Amap()) {
                         [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
                     } else {
