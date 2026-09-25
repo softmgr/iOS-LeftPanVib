@@ -33,6 +33,16 @@ static BOOL isSpecialApp_Huya(void) {
     return isHuya;
 }
 
+static BOOL isSpecialApp_Amap(void) {
+    static BOOL isAmap = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        isAmap = [bundleID isEqualToString:@"com.autonavi.amap"];
+    });
+    return isAmap;
+}
+
 // Identify Baidu Tieba's custom Post Detail (PB) View Controllers
 static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (!vc) return NO;
@@ -42,7 +52,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     NSString *vcClassStr = NSStringFromClass([vc class]);
     NSString *parentClassStr = vc.parentViewController ? NSStringFromClass([vc.parentViewController class]) : @"";
     
-    // "PBView" and "FirstFloor" are the core containers for Tieba threads.
     if ([vcClassStr containsString:@"PBView"] || [parentClassStr containsString:@"PBView"] ||
         [vcClassStr containsString:@"FirstFloor"] || [parentClassStr containsString:@"FirstFloor"]) {
         return YES;
@@ -133,12 +142,41 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return nil;
 }
 
-+ (BOOL)canGoBack:(UIViewController *)topVC isLandscape:(BOOL)isLandscape {
+// Check whether Amap is on its root map homepage by detecting signature navigation widgets
++ (BOOL)isAmapHomePage:(UIView *)rootView {
+    if (!rootView) return NO;
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:rootView];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if (v.hidden || v.alpha < 0.05) continue;
+        
+        NSString *cls = NSStringFromClass([v class]);
+        if ([cls isEqualToString:@"WINTabBar"] || 
+            [cls isEqualToString:@"WINQuickSearchBarV2"] ||
+            [cls isEqualToString:@"AMapUIWaterFallContentSlidableView"]) {
+            return YES;
+        }
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return NO;
+}
+
++ (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
     if (isLandscape) return YES;
     if (!topVC) return NO;
     
-    // Safety Net: Always allow gesture on Tieba Post views so Fallback Mode can capture it.
+    // Safety Net 1: Tieba Post views
     if (isTiebaPBViewController(topVC)) return YES;
+    
+    // Safety Net 2: AutoNavi / Amap SPA Architecture
+    if (isSpecialApp_Amap()) {
+        UIWindow *win = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
+        if ([self isAmapHomePage:win ?: topVC.view]) {
+            return NO; // Suppress swipe on the main map interface
+        }
+        return YES; // Allow in Settings, Navigation, Search, and Subpages
+    }
     
     UIViewController *current = topVC;
     while (current) {
@@ -150,6 +188,131 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         current = current.parentViewController;
     }
     return NO;
+}
+
+// Execute page exit logic across Amap's LTM, AJX, and view stack
++ (void)closeAmapPage:(UIViewController *)topVC window:(UIWindow *)window {
+    // 1. Invoke LTMPageManager singleton
+    Class ltmClass = NSClassFromString(@"LTMPageManager");
+    if (ltmClass) {
+        id mgr = nil;
+        if ([ltmClass respondsToSelector:@selector(sharedInstance)]) {
+            mgr = [ltmClass performSelector:@selector(sharedInstance)];
+        } else if ([ltmClass respondsToSelector:@selector(defaultManager)]) {
+            mgr = [ltmClass performSelector:@selector(defaultManager)];
+        }
+        if (mgr) {
+            SEL popAnimSel = NSSelectorFromString(@"popPageAnimated:");
+            if ([mgr respondsToSelector:popAnimSel]) {
+                NSMethodSignature *sig = [mgr methodSignatureForSelector:popAnimSel];
+                if (sig && sig.numberOfArguments == 3) {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setSelector:popAnimSel];
+                    [inv setTarget:mgr];
+                    BOOL arg = YES;
+                    [inv setArgument:&arg atIndex:2];
+                    [inv invoke];
+                    return;
+                }
+            }
+            NSArray *selNames = @[@"popPage", @"goBack", @"dismissPage", @"closePage", @"back", @"pop"];
+            for (NSString *s in selNames) {
+                SEL sel = NSSelectorFromString(s);
+                if ([mgr respondsToSelector:sel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [mgr performSelector:sel];
+                    #pragma clang diagnostic pop
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 2. Invoke NMPageLifeCycle singleton
+    Class plcClass = NSClassFromString(@"NMPageLifeCycle");
+    if (plcClass && [plcClass respondsToSelector:@selector(sharedInstance)]) {
+        id plc = [plcClass performSelector:@selector(sharedInstance)];
+        if (plc) {
+            NSArray *selNames = @[@"goBack", @"popPage", @"popPageAnimated:"];
+            for (NSString *s in selNames) {
+                SEL sel = NSSelectorFromString(s);
+                if ([plc respondsToSelector:sel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [plc performSelector:sel];
+                    #pragma clang diagnostic pop
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 3. Invoke direct controller selectors on GDMapViewController
+    NSArray *vcSels = @[@"goBack", @"onBack", @"popPage", @"dismissPage", @"pageBack", @"handleBack", @"back", @"onClickBackBtn", @"onBackBtnClicked"];
+    for (NSString *s in vcSels) {
+        SEL sel = NSSelectorFromString(s);
+        if ([topVC respondsToSelector:sel]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [topVC performSelector:sel];
+            #pragma clang diagnostic pop
+            return;
+        }
+    }
+    
+    // 4. Invoke AJXRouter
+    Class ajxRouter = NSClassFromString(@"AJXRouter");
+    if (ajxRouter) {
+        if ([ajxRouter respondsToSelector:NSSelectorFromString(@"pop")]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [ajxRouter performSelector:NSSelectorFromString(@"pop")];
+            #pragma clang diagnostic pop
+            return;
+        }
+        if ([ajxRouter respondsToSelector:NSSelectorFromString(@"goBack")]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            [ajxRouter performSelector:NSSelectorFromString(@"goBack")];
+            #pragma clang diagnostic pop
+            return;
+        }
+    }
+
+    // 5. Fallback: Trigger tap gestures on the top-left navigation back button
+    UIWindow *targetWin = window ?: topVC.view.window ?: [[UIApplication sharedApplication] keyWindow];
+    if (targetWin) {
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:targetWin];
+        while (queue.count > 0) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            if (v.hidden || v.alpha < 0.05) continue;
+            
+            CGRect absFrame = [v convertRect:v.bounds toView:nil];
+            if (absFrame.origin.x <= 80 && absFrame.origin.y <= 120 && absFrame.size.width >= 15 && absFrame.size.height >= 15) {
+                for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+                    if ([gr isKindOfClass:[UITapGestureRecognizer class]] || [NSStringFromClass([gr class]) containsString:@"Tap"]) {
+                        @try {
+                            NSArray *targets = [gr valueForKey:@"targets"];
+                            for (id targetObj in targets) {
+                                id target = [targetObj valueForKey:@"target"];
+                                SEL action = NSSelectorFromString([targetObj valueForKey:@"action"]);
+                                if (target && [target respondsToSelector:action]) {
+                                    #pragma clang diagnostic push
+                                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                                    [target performSelector:action withObject:gr];
+                                    #pragma clang diagnostic pop
+                                    return;
+                                }
+                            }
+                        } @catch (NSException *e) {}
+                    }
+                }
+            }
+            [queue addObjectsFromArray:v.subviews];
+        }
+    }
 }
 
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
@@ -174,7 +337,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     }
 }
 
-// Targeted Interception: Completely shield WeChat Mini Programs/Skyline to avoid white-screen state corruption
+// Targeted Interception: Isolate WeChat Mini Programs/Skyline to prevent white-screen crashes
 + (BOOL)isForbiddenAppViewController:(UIViewController *)vc {
     if (!vc) return NO;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -183,8 +346,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         UIViewController *curr = vc;
         while (curr) {
             NSString *cls = NSStringFromClass([curr class]);
-            // Strictly exclude all WeChat Mini Program/Mini Game containers (WAWebViewController, WAGame, Skyline)
-            // Chats (BaseMsgContent), Moments, and standard Settings are NOT matched and will run safely.
             if ([cls containsString:@"WAWebView"] || 
                 [cls containsString:@"WAGame"] || 
                 [cls containsString:@"Skyline"] || 
@@ -197,7 +358,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Deeply scan the view hierarchy to detect embedded game engine rendering surfaces
+// Deeply scan view hierarchy to block third-party game rendering engines
 + (BOOL)hasGameEngineView:(UIView *)view depth:(NSInteger)depth {
     if (!view || depth > 10) return NO;
     if (view.hidden || view.alpha < 0.05) return NO;
@@ -359,7 +520,8 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         self.useFallbackMode = YES;
 
         if (nav && !isLandscape) {
-            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC)) {
+            // Force Fallback mode for custom single-controller structures and overridden stacks
+            if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
             } else {
                 @try {
@@ -444,6 +606,10 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
                 if (isLandscape && supportsPortrait) {
                     [self forcePortraitOrientation];
                 } else {
+                    if (isSpecialApp_Amap()) {
+                        [LeftPanWindowHelper closeAmapPage:topVC window:self.window];
+                        return;
+                    }
                     [LeftPanWindowHelper closeTopViewControllerHierarchy:topVC];
                 }
             });
@@ -457,10 +623,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     if (gestureRecognizer != self.pan) return YES;
 
 #if ENABLE_DEBUG_LOGGING
-    // -------------------------------------------------------------
-    // GOD MODE (DEBUG ONLY)
-    // Instantly intercepts and authorizes the gesture to dump logs!
-    // -------------------------------------------------------------
     return YES;
 #endif
 
@@ -492,12 +654,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
-    // Priority Check: Discard gesture inside forbidden containers (WeChat Mini Programs/Skyline)
     if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) {
         return NO;
     }
 
-    if (!isSpecialApp_Huya()) {
+    // Exempt Huya and Amap from game engine blocking (AMap3DView contains 3D render pipelines)
+    if (!isSpecialApp_Huya() && !isSpecialApp_Amap()) {
         if ([LeftPanWindowHelper hasGameEngineView:window depth:0] || 
             [LeftPanWindowHelper hasGameEngineView:topVC.view depth:0]) {
             return NO;
@@ -512,7 +674,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return NO;
     }
 
-    if (![LeftPanWindowHelper canGoBack:topVC isLandscape:isLandscape]) {
+    if (![LeftPanWindowHelper canGoBack:topVC window:window isLandscape:isLandscape]) {
         return NO;
     }
 
