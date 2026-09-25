@@ -69,12 +69,10 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
-// Invert X-axis translation so leftward pan is treated as positive progress
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
-// Invert X-axis velocity so leftward flick is treated as positive velocity
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
@@ -133,31 +131,31 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return foundWindow;
 }
 
-// Recursively inspect top visible UIViewController, resolving modals, tabs, and child containers
+// Clean hierarchy resolver: stops at visible view controllers to preserve standard navigation/modal containers
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
         return [self findTopViewController:root.presentedViewController];
     }
     if ([root isKindOfClass:[UINavigationController class]]) {
-        UIViewController *visible = ((UINavigationController *)root).visibleViewController;
-        if (visible && visible.presentedViewController) {
-            return [self findTopViewController:visible.presentedViewController];
-        }
-        return visible ?: root;
+        return [self findTopViewController:((UINavigationController *)root).visibleViewController];
     }
     if ([root isKindOfClass:[UITabBarController class]]) {
         return [self findTopViewController:((UITabBarController *)root).selectedViewController];
     }
-    for (UIViewController *child in root.childViewControllers.reverseObjectEnumerator) {
-        if (child.isViewLoaded && child.view.window && !child.view.hidden && child.view.alpha > 0.01) {
-            return [self findTopViewController:child];
+    
+    // Only inspect childViewControllers for non-navigation containers (e.g. React Native screen containers)
+    if (!root.navigationController) {
+        for (UIViewController *child in root.childViewControllers.reverseObjectEnumerator) {
+            if (child.isViewLoaded && child.view.window && !child.view.hidden && child.view.alpha > 0.01) {
+                return [self findTopViewController:child];
+            }
         }
     }
     return root;
 }
 
-// Locate an active UINavigationController ancestor capable of popping
+// Strict ancestor traversal: returns navigation controller strictly belonging to the controller chain
 + (UINavigationController *)findValidNavigationControllerFor:(UIViewController *)vc {
     UIViewController *current = vc;
     while (current) {
@@ -171,21 +169,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
             }
         }
         current = current.parentViewController;
-    }
-
-    // Fallback: inspect root view controller of the key window
-    UIWindow *keyWin = [self resolveKeyWindow];
-    UIViewController *root = keyWin.rootViewController;
-    if ([root isKindOfClass:[UINavigationController class]]) {
-        UINavigationController *nav = (UINavigationController *)root;
-        if (nav.viewControllers.count > 1) return nav;
-    }
-    if ([root isKindOfClass:[UITabBarController class]]) {
-        UIViewController *sel = ((UITabBarController *)root).selectedViewController;
-        if ([sel isKindOfClass:[UINavigationController class]]) {
-            UINavigationController *nav = (UINavigationController *)sel;
-            if (nav.viewControllers.count > 1) return nav;
-        }
     }
     return nil;
 }
@@ -209,7 +192,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Generic Flutter Framework Inspection: Detect embedded PlatformView / Video texture layers
 + (BOOL)isFlutterSubpageActive:(UIViewController *)topVC {
     if (!topVC || ![topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) return NO;
     UIView *fView = topVC.view;
@@ -231,7 +213,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// Universal validation engine to decide whether a return gesture can be dispatched
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
     if (!topVC) return NO;
 
@@ -254,19 +235,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
-    // 3. Huya Live Navigation Stack Check
-    if (isSpecialApp_Huya()) {
-        UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
-        if (nav && nav.viewControllers.count > 1) return YES;
-        if (topVC.presentingViewController) return YES;
-        return NO;
-    }
-    
-    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
-    if (UIDeviceOrientationIsLandscape(devOri)) {
-        return YES;
-    }
-    
     UIViewController *current = topVC;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) return YES;
@@ -286,14 +254,9 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     
     // Whitelisted apps with standard native orientation lifecycle never require transform-based fake landscape detection
     if (isSpecialApp_Huya() || isSpecialApp_Amap()) {
-        return isSystemLandscape;
+        return NO;
     }
 
-    UIDeviceOrientation devOri = [[UIDevice currentDevice] orientation];
-    if (UIDeviceOrientationIsLandscape(devOri)) {
-        return YES;
-    }
-    
     if (window && window.bounds.size.width > window.bounds.size.height) {
         return YES;
     }
@@ -323,7 +286,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return NO;
 }
 
-// React Native DeviceEventEmitter: Dispatch orientation events directly to JavaScript bridge
 static void notifyReactNativeOrientationBridge(UIWindow *window) {
     if (!window) return;
     UIView *rootView = nil;
@@ -394,7 +356,6 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     }
 }
 
-// Locate physical exit button in the upper-left corner of the player view
 + (UIView *)findActualPlayerBackButton:(UIView *)root window:(UIWindow *)window {
     if (!root || !window) return nil;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -433,7 +394,6 @@ static void notifyReactNativeOrientationBridge(UIWindow *window) {
     return bestCandidate;
 }
 
-// Synthesize touch events for React Native TouchHandler & UIKit targets
 + (void)simulateTapOnVerifiedView:(UIView *)targetView inWindow:(UIWindow *)window {
     if (!targetView || !window) return;
     CGRect r = [targetView convertRect:targetView.bounds toView:window];
@@ -573,7 +533,6 @@ static void lockRNOrientationToPortrait(void) {
     }
 }
 
-// Constrain video container views to portrait width while preserving screen/layout root containers
 + (void)correctLandscapeViewHierarchy:(UIView *)root targetWidth:(CGFloat)targetW {
     if (!root || targetW <= 0) return;
     NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
@@ -586,7 +545,6 @@ static void lockRNOrientationToPortrait(void) {
 
         NSString *cls = NSStringFromClass([v class]);
         
-        // Skip fundamental navigation, root, transition, and scroll wrappers
         if ([cls containsString:@"Window"] || [cls containsString:@"Transition"] || 
             [cls containsString:@"Layout"] || [cls containsString:@"Screen"] || 
             [cls containsString:@"Root"] || [cls containsString:@"Scroll"] || 
@@ -667,7 +625,6 @@ static void lockRNOrientationToPortrait(void) {
     return NO;
 }
 
-// Method reflection fallback to invoke exit full-screen routines
 + (BOOL)exitVideoFullScreen:(UIViewController *)topVC window:(UIWindow *)window {
     BOOL didTrigger = NO;
 
@@ -812,6 +769,7 @@ static void lockRNOrientationToPortrait(void) {
     });
 }
 
+// Clean return engine: pops navigation controller if pushed, or dismisses if presented modally
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
     if (topVC && [topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         if ([topVC respondsToSelector:NSSelectorFromString(@"popRoute")]) {
@@ -829,14 +787,6 @@ static void lockRNOrientationToPortrait(void) {
         return;
     }
 
-    // 1. Direct navigation pop via universal hierarchy search
-    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
-    if (nav && nav.viewControllers.count > 1) {
-        [nav popViewControllerAnimated:YES];
-        return;
-    }
-
-    // 2. Normal hierarchy walk for navigation or modal presentation
     UIViewController *current = topVC;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) {
@@ -844,9 +794,9 @@ static void lockRNOrientationToPortrait(void) {
             return;
         }
         if ([current isKindOfClass:[UINavigationController class]]) {
-            UINavigationController *cNav = (UINavigationController *)current;
-            if (cNav.viewControllers.count > 1) {
-                [cNav popViewControllerAnimated:YES];
+            UINavigationController *nav = (UINavigationController *)current;
+            if (nav.viewControllers.count > 1) {
+                [nav popViewControllerAnimated:YES];
                 return;
             }
         }
@@ -857,17 +807,10 @@ static void lockRNOrientationToPortrait(void) {
         current = current.parentViewController;
     }
 
-    // 3. Fallback to keyWindow root navigation controller or modal
+    // Modal fallback for presented screens
     UIWindow *keyWin = [self resolveKeyWindow];
-    if (keyWin.rootViewController) {
-        UINavigationController *rootNav = [self findValidNavigationControllerFor:keyWin.rootViewController];
-        if (rootNav && rootNav.viewControllers.count > 1) {
-            [rootNav popViewControllerAnimated:YES];
-            return;
-        }
-        if (keyWin.rootViewController.presentedViewController) {
-            [keyWin.rootViewController dismissViewControllerAnimated:YES completion:nil];
-        }
+    if (keyWin.rootViewController.presentedViewController) {
+        [keyWin.rootViewController.presentedViewController dismissViewControllerAnimated:YES completion:nil];
     }
 }
 
@@ -913,7 +856,6 @@ static void lockRNOrientationToPortrait(void) {
     return NO;
 }
 
-// Anti-Bounce Rotation Controller: Hard-locks portrait during transitions to prevent accelerometer bouncing
 - (void)forcePortraitOrientation {
     g_forceAllowPortrait = YES;
     lockRNOrientationToPortrait();
@@ -1003,19 +945,27 @@ static void lockRNOrientationToPortrait(void) {
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
+    UIWindow *window = pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController ?: [LeftPanWindowHelper resolveKeyWindow].rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
 
-    UIWindow *window = pan.view.window ?: self.window;
     BOOL isLandscape = NO;
+    if (window && window.bounds.size.width > window.bounds.size.height) {
+        isLandscape = YES;
+    } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    if (@available(iOS 13.0, *)) {
-        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
-    } else {
-        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
-    }
+        if (@available(iOS 13.0, *)) {
+            if (window.windowScene) {
+                isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+            } else {
+                isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+            }
+        } else {
+            isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+        }
 #pragma clang diagnostic pop
+    }
 
     if (pan.state == UIGestureRecognizerStateBegan) {
         self.systemTarget = nil;
@@ -1127,17 +1077,31 @@ static void lockRNOrientationToPortrait(void) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.pan) return YES;
 
-    UIWindow *window = self.pan.view.window ?: self.window;
+    UIWindow *window = self.pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
     BOOL isLandscape = NO;
-
+    if (window && window.bounds.size.width > window.bounds.size.height) {
+        isLandscape = YES;
+    } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    if (@available(iOS 13.0, *)) {
-        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
-    } else {
-        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
-    }
+        if (@available(iOS 13.0, *)) {
+            if (window.windowScene) {
+                isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+            } else {
+                isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+            }
+        } else {
+            isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
+        }
 #pragma clang diagnostic pop
+    }
+
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController ?: [LeftPanWindowHelper resolveKeyWindow].rootViewController];
+
+    // Flutter dual-axis gesture protection: disable left-pan in landscape only
+    if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")] && isLandscape) {
+        return NO;
+    }
 
     CGPoint loc = [self.pan locationInView:self.pan.view];
     CGFloat screenWidth = self.pan.view.bounds.size.width;
@@ -1148,8 +1112,6 @@ static void lockRNOrientationToPortrait(void) {
         CGFloat ratio = isSpecialApp_Huya() ? kLPVHuyaPortraitZoneRatio : kLPVPortraitZoneRatio;
         if (loc.x < screenWidth * ratio) return NO;
     }
-
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:self.window.rootViewController];
 
     if ([LeftPanWindowHelper isForbiddenAppViewController:topVC]) return NO;
 
