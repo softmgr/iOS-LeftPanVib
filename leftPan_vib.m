@@ -69,10 +69,12 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 - (CGPoint)rawVelocityInView:(UIView *)view {
     return [super velocityInView:view];
 }
+// Invert X-axis translation so leftward pan is treated as positive progress
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint t = [super translationInView:view];
     return CGPointMake(-t.x, t.y);
 }
+// Invert X-axis velocity so leftward flick is treated as positive velocity
 - (CGPoint)velocityInView:(UIView *)view {
     CGPoint v = [super velocityInView:view];
     return CGPointMake(-v.x, v.y);
@@ -131,7 +133,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return foundWindow;
 }
 
-// Clean hierarchy resolver: stops at visible view controllers to preserve standard navigation/modal containers
+// Recursively inspect top visible UIViewController, resolving modals, tabs, and child containers
 + (UIViewController *)findTopViewController:(UIViewController *)root {
     if (!root) return nil;
     if (root.presentedViewController) {
@@ -144,7 +146,7 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return [self findTopViewController:((UITabBarController *)root).selectedViewController];
     }
     
-    // Only inspect childViewControllers for non-navigation containers (e.g. React Native screen containers)
+    // Only inspect childViewControllers for non-navigation containers (e.g., LiveContainer hosts, RN screens)
     if (!root.navigationController) {
         for (UIViewController *child in root.childViewControllers.reverseObjectEnumerator) {
             if (child.isViewLoaded && child.view.window && !child.view.hidden && child.view.alpha > 0.01) {
@@ -155,8 +157,32 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
     return root;
 }
 
-// Strict ancestor traversal: returns navigation controller strictly belonging to the controller chain
+// Global Nav Radar: Deep dive into the entire view controller tree to find ANY valid navigation stack
++ (UINavigationController *)searchNavInRoot:(UIViewController *)root {
+    if (!root) return nil;
+    
+    if (root.presentedViewController) {
+        UINavigationController *nav = [self searchNavInRoot:root.presentedViewController];
+        if (nav) return nav;
+    }
+    if ([root isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *nav = (UINavigationController *)root;
+        if (nav.viewControllers.count > 1) return nav;
+    }
+    if ([root isKindOfClass:[UITabBarController class]]) {
+        UINavigationController *nav = [self searchNavInRoot:((UITabBarController *)root).selectedViewController];
+        if (nav) return nav;
+    }
+    for (UIViewController *child in root.childViewControllers.reverseObjectEnumerator) {
+        UINavigationController *nav = [self searchNavInRoot:child];
+        if (nav) return nav;
+    }
+    return nil;
+}
+
+// Robust Navigation Resolution: Handles detached PIP layers and isolated sandboxes like LiveContainer
 + (UINavigationController *)findValidNavigationControllerFor:(UIViewController *)vc {
+    // 1. Traverse parent chain explicitly
     UIViewController *current = vc;
     while (current) {
         if (current.navigationController && current.navigationController.viewControllers.count > 1) {
@@ -164,13 +190,14 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         }
         if ([current isKindOfClass:[UINavigationController class]]) {
             UINavigationController *nav = (UINavigationController *)current;
-            if (nav.viewControllers.count > 1) {
-                return nav;
-            }
+            if (nav.viewControllers.count > 1) return nav;
         }
         current = current.parentViewController;
     }
-    return nil;
+    
+    // 2. Global Radar Fallback for sandboxes (LiveContainer / Floating PIPs)
+    UIWindow *window = vc.view.window ?: [self resolveKeyWindow];
+    return [self searchNavInRoot:window.rootViewController];
 }
 
 + (BOOL)isAmapHomePage:(UIView *)rootView {
@@ -235,15 +262,17 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
+    // 3. Utilize the Robust Global Radar for navigating normal & LiveContainer nested views
+    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
+    if (nav && nav.viewControllers.count > 1) return YES;
+    
+    // 4. Fallback checking for active Modals
     UIViewController *current = topVC;
     while (current) {
-        if (current.navigationController && current.navigationController.viewControllers.count > 1) return YES;
-        if ([current isKindOfClass:[UINavigationController class]]) {
-            if (((UINavigationController *)current).viewControllers.count > 1) return YES;
-        }
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) return YES;
         current = current.parentViewController;
     }
+    
     return NO;
 }
 
@@ -252,7 +281,6 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 + (BOOL)isAnyLandscapeActive:(UIWindow *)window topVC:(UIViewController *)topVC isSystemLandscape:(BOOL)isSystemLandscape {
     if (isSystemLandscape) return YES;
     
-    // Whitelisted apps with standard native orientation lifecycle never require transform-based fake landscape detection
     if (isSpecialApp_Huya() || isSpecialApp_Amap()) {
         return NO;
     }
@@ -769,7 +797,7 @@ static void lockRNOrientationToPortrait(void) {
     });
 }
 
-// Clean return engine: pops navigation controller if pushed, or dismisses if presented modally
+// Unified Top Hierarchy Closer: Uses global nav radar to solve LiveContainer isolation issues
 + (void)closeTopViewControllerHierarchy:(UIViewController *)topVC {
     if (topVC && [topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         if ([topVC respondsToSelector:NSSelectorFromString(@"popRoute")]) {
@@ -787,19 +815,16 @@ static void lockRNOrientationToPortrait(void) {
         return;
     }
 
+    // 1. Direct navigation pop via universal hierarchy search (handles LC & floating PIPs)
+    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
+    if (nav && nav.viewControllers.count > 1) {
+        [nav popViewControllerAnimated:YES];
+        return;
+    }
+
+    // 2. Normal hierarchy walk for modal presentation dismissals
     UIViewController *current = topVC;
     while (current) {
-        if (current.navigationController && current.navigationController.viewControllers.count > 1) {
-            [current.navigationController popViewControllerAnimated:YES];
-            return;
-        }
-        if ([current isKindOfClass:[UINavigationController class]]) {
-            UINavigationController *nav = (UINavigationController *)current;
-            if (nav.viewControllers.count > 1) {
-                [nav popViewControllerAnimated:YES];
-                return;
-            }
-        }
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) {
             [current dismissViewControllerAnimated:YES completion:nil];
             return;
@@ -807,7 +832,7 @@ static void lockRNOrientationToPortrait(void) {
         current = current.parentViewController;
     }
 
-    // Modal fallback for presented screens
+    // 3. Fallback for deep global modals
     UIWindow *keyWin = [self resolveKeyWindow];
     if (keyWin.rootViewController.presentedViewController) {
         [keyWin.rootViewController.presentedViewController dismissViewControllerAnimated:YES completion:nil];
@@ -856,6 +881,7 @@ static void lockRNOrientationToPortrait(void) {
     return NO;
 }
 
+// Anti-Bounce Rotation Controller
 - (void)forcePortraitOrientation {
     g_forceAllowPortrait = YES;
     lockRNOrientationToPortrait();
@@ -942,37 +968,96 @@ static void lockRNOrientationToPortrait(void) {
     });
 }
 
+#pragma mark - Debug Information Dumper
+
+#if ENABLE_DEBUG_LOGGING
++ (NSString *)dumpViewHierarchy:(UIView *)view depth:(int)depth maxDepth:(int)maxDepth {
+    if (!view || depth > maxDepth) return @"";
+    NSMutableString *result = [NSMutableString string];
+    NSString *indent = [@"" stringByPaddingToLength:depth*2 withString:@"-" startingAtIndex:0];
+
+    CGRect f = view.frame;
+    [result appendFormat:@"%@ %@ (F:{%.1f,%.1f,%.1f,%.1f}, Alpha:%.2f, Hidden:%d)\n", indent, NSStringFromClass([view class]), f.origin.x, f.origin.y, f.size.width, f.size.height, view.alpha, view.isHidden];
+
+    for (UIView *sub in view.subviews) {
+        [result appendString:[self dumpViewHierarchy:sub depth:depth + 1 maxDepth:maxDepth]];
+    }
+    return result;
+}
+
++ (void)captureDebugInfoToClipboard:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
+    NSMutableString *log = [NSMutableString stringWithString:@"\n=== LPV DEBUG LOG ===\n"];
+    [log appendFormat:@"Time: %@\n", [NSDate date]];
+    [log appendFormat:@"BundleID: %@\n", [[NSBundle mainBundle] bundleIdentifier]];
+    [log appendFormat:@"Orientation: %@\n", isLandscape ? @"Landscape" : @"Portrait"];
+
+    [log appendFormat:@"\n[All Windows in Process]\n"];
+    @try {
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            [log appendFormat:@"- %@ (F:{%.1f,%.1f,%.1f,%.1f}, Lvl:%.1f, Hidden:%d, Key:%d)\n",
+             NSStringFromClass([w class]), w.frame.origin.x, w.frame.origin.y, w.frame.size.width, w.frame.size.height, w.windowLevel, w.isHidden, w.isKeyWindow];
+        }
+    } @catch (NSException *e) {}
+
+    [log appendFormat:@"\n[Controllers]\n"];
+    [log appendFormat:@"TopVC: %@\n", topVC ? NSStringFromClass([topVC class]) : @"nil"];
+    if (topVC.parentViewController) {
+        [log appendFormat:@"ParentVC: %@\n", NSStringFromClass([topVC.parentViewController class])];
+    }
+
+    UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
+    [log appendFormat:@"ValidNavVC: %@\n", nav ? NSStringFromClass([nav class]) : @"nil"];
+
+    [log appendFormat:@"\n[TopVC View Hierarchy (Depth 12)]\n"];
+    if (topVC && topVC.view) {
+        [log appendString:[self dumpViewHierarchy:topVC.view depth:0 maxDepth:12]];
+    }
+
+    [log appendFormat:@"\n[Window View Hierarchy (Depth 12)]\n"];
+    if (window) {
+        [log appendString:[self dumpViewHierarchy:window depth:0 maxDepth:12]];
+    }
+
+    [log appendString:@"=====================\n"];
+
+    @try {
+        UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+        pasteboard.string = log;
+    } @catch (NSException *e) {}
+
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
+    [feedback prepare];
+    [feedback impactOccurred];
+}
+#endif
+
 #pragma mark - Gesture & Haptic Handling
 
 - (void)handlePan:(LPVReversePanGesture *)pan {
     UIWindow *window = pan.view.window ?: self.window ?: [LeftPanWindowHelper resolveKeyWindow];
-    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController ?: [LeftPanWindowHelper resolveKeyWindow].rootViewController];
+    UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController];
     UINavigationController *nav = [LeftPanWindowHelper findValidNavigationControllerFor:topVC];
 
     BOOL isLandscape = NO;
-    if (window && window.bounds.size.width > window.bounds.size.height) {
-        isLandscape = YES;
-    } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        if (@available(iOS 13.0, *)) {
-            if (window.windowScene) {
-                isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
-            } else {
-                isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
-            }
-        } else {
-            isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
-        }
-#pragma clang diagnostic pop
+    if (@available(iOS 13.0, *)) {
+        isLandscape = UIInterfaceOrientationIsLandscape(window.windowScene.interfaceOrientation);
+    } else {
+        isLandscape = UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation);
     }
+#pragma clang diagnostic pop
 
     if (pan.state == UIGestureRecognizerStateBegan) {
+
+#if ENABLE_DEBUG_LOGGING
+        [LeftPanWindowHelper captureDebugInfoToClipboard:topVC window:window isLandscape:isLandscape];
+#endif
+
         self.systemTarget = nil;
         self.systemAction = NULL;
         self.useFallbackMode = YES;
 
-        // Native Interactive Pop: Drive UINavigationTransition directly for real-time visual drag tracking
         if (nav && !isLandscape) {
             if (isSpecialApp_Huya() || isTiebaPBViewController(topVC) || isSpecialApp_Amap()) {
                 self.useFallbackMode = YES;
@@ -1098,7 +1183,6 @@ static void lockRNOrientationToPortrait(void) {
 
     UIViewController *topVC = [LeftPanWindowHelper findTopViewController:window.rootViewController ?: [LeftPanWindowHelper resolveKeyWindow].rootViewController];
 
-    // Flutter dual-axis gesture protection: disable left-pan in landscape only
     if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")] && isLandscape) {
         return NO;
     }
