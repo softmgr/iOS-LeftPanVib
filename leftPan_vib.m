@@ -243,13 +243,13 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
 + (BOOL)canGoBack:(UIViewController *)topVC window:(UIWindow *)window isLandscape:(BOOL)isLandscape {
     if (!topVC) return NO;
 
-    // 1. Flutter Framework: Yield landscape control to protect native dual-axis playback gestures
+    // Flutter Framework: Yield landscape control to protect native dual-axis playback gestures
     if ([topVC isKindOfClass:NSClassFromString(@"FlutterViewController")]) {
         if (isLandscape) return NO;
         return [self isFlutterSubpageActive:topVC];
     }
 
-    // 2. Standard Landscape: Always permit exiting full-screen video
+    // Standard Landscape: Always permit exiting full-screen video
     if (isLandscape) return YES;
     
     if (isTiebaPBViewController(topVC)) return YES;
@@ -262,11 +262,11 @@ static BOOL isTiebaPBViewController(UIViewController *vc) {
         return YES; 
     }
     
-    // 3. Utilize the Robust Global Radar for navigating normal & LiveContainer nested views
+    // Utilize the Robust Global Radar for navigating normal & LiveContainer nested views
     UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) return YES;
     
-    // 4. Fallback checking for active Modals
+    // Fallback checking for active Modals
     UIViewController *current = topVC;
     while (current) {
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) return YES;
@@ -815,14 +815,14 @@ static void lockRNOrientationToPortrait(void) {
         return;
     }
 
-    // 1. Direct navigation pop via universal hierarchy search (handles LC & floating PIPs)
+    // Direct navigation pop via universal hierarchy search (handles LC & floating PIPs)
     UINavigationController *nav = [self findValidNavigationControllerFor:topVC];
     if (nav && nav.viewControllers.count > 1) {
         [nav popViewControllerAnimated:YES];
         return;
     }
 
-    // 2. Normal hierarchy walk for modal presentation dismissals
+    // Normal hierarchy walk for modal presentation dismissals
     UIViewController *current = topVC;
     while (current) {
         if (current.presentingViewController && ![current isKindOfClass:[UITabBarController class]]) {
@@ -832,7 +832,7 @@ static void lockRNOrientationToPortrait(void) {
         current = current.parentViewController;
     }
 
-    // 3. Fallback for deep global modals
+    // Fallback for deep global modals
     UIWindow *keyWin = [self resolveKeyWindow];
     if (keyWin.rootViewController.presentedViewController) {
         [keyWin.rootViewController.presentedViewController dismissViewControllerAnimated:YES completion:nil];
